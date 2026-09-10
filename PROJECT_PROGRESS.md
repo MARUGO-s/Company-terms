@@ -1,5 +1,14 @@
 # LINE Report Project Progress
 
+### 2026-09-10 - 予測システムの本番確認と関連Markdownの現行化
+
+- 本番反映: [PR #225](https://github.com/MARUGO-s/line_report/pull/225) をマージ。main `f9b3a809620ed12e9914e8f4691fb0162e43749d` の [Edge](https://github.com/MARUGO-s/line_report/actions/runs/34475509493) は21:18:30 JST、[Pages](https://github.com/MARUGO-s/line_report/actions/runs/34475509514) は21:18:48 JSTに成功。
+- 本番確認: migration・毎朝05:00 cron・dry-run・初回1発行/75予測・再実行不変・認証拒否・台帳権限・ログイン済みUIを確認。夜間の初回は朝の評価対象外で、本番評価0日は蓄積開始として正常。長期精度の改善を実証したという意味ではない。
+- 文書: README、学習構造、モデル/ループ解説、総合/完全/内部/分析設計、索引を5方式・事前台帳・WAPE/MAE・週次安全判定へ更新。旧GLMの数式を履歴専用ファイルへ分離し、過去のDB件数を現在値と読まないよう確認日を明記。Journal予測・生成AI品質との区別も追記。
+- 採用条件の表記修正: コードの厳密不等号に合わせ「5%以上」ではなく「5%を超える改善」とする。
+- 文書検証: 更新Markdown内の相対リンク494件を確認しリンク切れ0件。旧配置のリンク104か所を修正。`help:update` / `knowledge:update` で統合資料・構造図・Obsidianを同期し、`test:ci` / `test:knowledge` / `check` / `knowledge:check` / `git diff --check` が成功。予測ロジックとDBは変更せず、画面と実行時ヘルプの閾値説明だけを一致させた。
+- 正本: [FOODCOURT-FORECAST-AUDIT.md](./docs/FOODCOURT-FORECAST-AUDIT.md)。以下の日付付き記録は履歴で、矛盾する数値予測仕様は現行正本を優先する。
+
 ### 2026-09-10 - 来客・売上予測を事前予測台帳と5方式比較へ移行
 
 - 原因切分け: 学習画面の大きな上下は、採用モデルの切替と全履歴MAPE表示を含み、台風の因果とは断定できない。都市対抗野球のプロ野球誤分類も確認した。
