@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.44.0"
-import { parseTokyoDomeSchedule, type ExtractedTokyoDomeEvent } from "../_shared/tokyo_dome_schedule.ts"
+import { normalizeBaseballCategory, parseTokyoDomeSchedule, type ExtractedTokyoDomeEvent } from "../_shared/tokyo_dome_schedule.ts"
 import { GROQ_TEXT_FALLBACK_MODEL, resolveGroqTextModel } from "../_shared/groq_model.ts"
 import { isInternalCronAuthorized } from "../_shared/internal_cron_auth.ts"
 
@@ -125,7 +125,7 @@ Deno.serve(async (req) => {
   }
   const now = new Date().toISOString()
   const rows = [
-    ...domeEvents.map((e) => ({ event_date: e.event_date, venue: "tokyo-dome", title: e.title, category: e.category, source: "tokyo-dome.co.jp", updated_at: now })),
+    ...domeEvents.map((e) => ({ event_date: e.event_date, venue: "tokyo-dome", title: e.title, category: normalizeBaseballCategory(e.title, e.category), source: "tokyo-dome.co.jp", updated_at: now })),
     ...hallResults.flatMap((r) => r.events.map((e) => ({ event_date: e.event_date, venue: r.venue, title: e.title, category: e.category, source: r.source, updated_at: now }))),
     ...immEvents.map((e) => ({ event_date: e.event_date, venue: "imm", title: e.title, category: e.category, source: "imm.theater", updated_at: now })),
   ]
