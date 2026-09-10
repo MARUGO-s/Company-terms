@@ -998,7 +998,7 @@
         ${(audit.upcoming||[]).map(p=>`<tr><td class="l">${escH(fmtDate(p.target_date))}</td><td>${auditNumber(p.guests,'人')}</td><td>${p.guests_low!=null&&p.guests_high!=null?auditNumber(p.guests_low,'')+'〜'+auditNumber(p.guests_high,'人'):'評価データ不足'}</td><td>${auditNumber(p.sales,'円')}</td><td>${p.input_snapshot?.featureMissing?'イベント・天候未確認':p.input_snapshot?.weatherKnown===false?'天候不明':'取得済み'}</td></tr>`).join('')}
         </tbody></table></div><p style="font-size:12px;color:var(--tx-3)">区間は同じ先行日数の過去誤差から算出。事前予測の実績が20日未満の間は、更新済み天候を使う再計算に基づく参考幅です。入力不明や急な休業・悪天候では広い幅でも外れる可能性があります。</p>
       </div>
-      <div class="card-note">新方式の採用は月曜日に判定します。朝の時間枠（JST 09:00より前、通常05:00）の1日前予測で共通21日以上、客数と売上の平均誤差がともに5%以上改善し、前後半でも改善する場合が対象です。採用後28日は再切替を待ちます。統計的有意差を保証する基準ではありません。<br>
+      <div class="card-note">新方式の採用は月曜日に判定します。朝の時間枠（JST 09:00より前、通常05:00）の1日前予測で共通21日以上、客数と売上の平均誤差がともに5%を超えて改善し、前後半でも改善する場合が対象です。採用後28日は再切替を待ちます。統計的有意差を保証する基準ではありません。<br>
       データ点検: 不正・未入力 ${Number(audit.data_quality?.excluded_invalid_days||0)}日除外 ／ 天候不明 ${Number(audit.data_quality?.unknown_weather_days||0)}日 ／ ゼロ実績 ${Number(audit.data_quality?.zero_actual_days||0)}日を保持。未入力を休業・ゼロとは判断しません。</div>`;
     const bind = (id,value,fn) => {const el=document.getElementById(id);el.value=String(value);el.addEventListener('change',()=>{fn(el.value);renderKpi();});};
     bind('forecastAuditKind',auditKind,v=>auditKind=v);

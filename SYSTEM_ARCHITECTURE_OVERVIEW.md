@@ -418,6 +418,8 @@ Browser
 
 ## 13. 売上予測と MAPE
 
+この節はJournalの `sales_forecasts` による予測履歴であり、フードコートの事前予測台帳・5方式比較とは別機能。2026-09-10更新のフードコート数値予測は [FOODCOURT-FORECAST-AUDIT.md](./docs/FOODCOURT-FORECAST-AUDIT.md) を参照する。
+
 | 項目 | 内容 |
 |---|---|
 | 入力 | カテゴリ付きの保存済み **月間** レポート系列 |
