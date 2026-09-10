@@ -22,7 +22,7 @@
     "test:knowledge": "node --test tests/knowledge_system.test.mjs",
     "test:structure": "node --test tests/repository_structure.test.mjs tests/ux_mobile_layout.test.mjs tests/journal_report_overwrite_guard.test.mjs tests/html_inline_scripts.test.mjs tests/database_security_advisor_boundaries.test.mjs tests/security_authorization_hardening.test.mjs && deno test --no-lock --no-check tests/internal_cron_auth.test.ts tests/admin_dashboard_link_auth.test.ts",
     "test:chat": "deno test --no-lock --no-check --allow-read --allow-env tests/mtalk_casual_chat.test.ts tests/mtalk_daily_sales_import.test.ts tests/mtalk_menu_knowledge.test.ts tests/line_report_help_manual.test.ts tests/line_report_help_coverage.test.ts tests/chat_admin_delegation_scope.test.ts && node --test tests/chat_web_push.test.ts tests/chat_admin_permissions.test.mjs tests/chat_admin_room_bot_delete.test.mjs tests/chat_admin_templates.test.mjs tests/chat_admin_delegation.test.mjs tests/chat_private_notes.test.mjs tests/chat_least_privilege.test.mjs tests/authenticated_internal_rpc_boundaries.test.mjs tests/public_write_policy_boundaries.test.mjs tests/chat_store_bot_logos.test.mjs tests/chat_emotion_stickers.test.mjs tests/chat_profile_icon_catalog.test.mjs tests/chat_history_since_join.test.mjs tests/mtalk_schedule.test.ts tests/mtalk_journal_paste_format.test.mjs tests/calendar_tomorrow_reminder.test.ts tests/calendar_multi_reminders.test.ts tests/chat_silent_messages.test.mjs tests/chat_read_receipts.test.mjs tests/chat_mac_back_swipe.test.mjs tests/chat_media_archive.test.mjs tests/chat_keep_albums.test.mjs tests/chat_file_links.test.mjs tests/mtalk_staff_help.test.mjs tests/chat_message_edit.test.mjs tests/chat_join_invite_list.test.mjs tests/chat_signup_approval.test.mjs tests/chat_user_stores.test.mjs tests/chat_admin_notices_private.test.mjs tests/room_hard_delete.test.ts",
-    "test:foodcourt": "node --test tests/foodcourt_*.test.ts",
+    "test:foodcourt": "node --test tests/foodcourt_*.test.ts tests/foodcourt_*.test.mjs",
     "test:reservation": "node --test tests/reservation_*.test.ts",
     "test:receipt": "deno test --no-lock --no-check --allow-read --allow-env tests/yamato_collect_expense.test.ts && node --test tests/receipt_*.test.ts",
     "test:journal-ai": "deno test --no-lock --allow-read --allow-env tests/knowledge_menu_extract.test.ts tests/journal_grok_x_search.test.ts tests/journal_ai_privacy.test.ts tests/journal_ai_brief_cache.test.ts tests/journal_ai_usage_tokens.test.ts && node --test tests/journal_ai_orchestrate.test.mjs tests/journal_chat_query_planner.test.mjs tests/journal_ai_weather.test.mjs",
@@ -33,5 +33,8 @@
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.1"
   }
 }

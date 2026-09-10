@@ -1,40 +1,14 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.44.0"
-import { chooseFoodCourtGlm } from "../_shared/foodcourt_forecast_utils.ts"
+import { FORECAST_ENGINE_VERSION, LEGACY_MODEL, MODEL_IDS, candidatePredictions, retrospective, scoreLedger, evaluationReport, selectChampion, predictionInterval, score, dateDistance, type Predictor, type LedgerRow } from "../_shared/foodcourt_forecast_engine.ts"
 import { isInternalCronAuthorized } from "../_shared/internal_cron_auth.ts"
 
-// フードコート（MARUGO S）来客予測の「自己再学習型」モデル cron。
-// 毎日、蓄積された全実績から係数を学習し直し（＝貯まるほど精度が上がる）、客数・売上を予測する。
-//
-// 2モデルを毎晩バックテストで比較し、精度の良い方を自動採用する「モデル選択ループ」を実装している:
-//  A) 乗算モデル(mult-factor-v3・レガシー): 客数=ベース×曜日係数×イベント/会場係数(客層)×天気係数。
-//     各係数は実績の平均比から推定し、サンプルが少ない係数は1へ収縮(shrink)。AI解説(foodcourt_forecast_factors)
-//     はこのモデルの係数を常に参照する（解釈しやすい「倍率」の形を保つため、勝敗に関係なく毎晩計算）。
-//  B) ポアソン回帰(glm-poisson-v5): 客数(カウントデータ)を log(客数) = 切片+曜日+イベント/会場×客層+雨
-//     +log(1+降水量)+猛暑+log(1+予想動員数)+トレンド(時間)+トレンド二次+季節性 の一般化線形モデルで推定(IRLS)。イベント係数は
-//     東京ドーム本体/カナデビア/後楽園を分け、会場ごとの客層差（野球/大型ライブ/若年層ライブ/格闘技等）を扱う。
-//     v4で交互作用項(土日×大型/雨×大型/猛暑×大型イベント)、v5で年周期季節性と非線形トレンドを追加。
-//     係数はリッジ正則化(過学習防止＝旧モデルのshrinkに相当)つきの最尤推定になり、
-//     「予想動員数」という連続値の特徴量と「トレンド(開店後の伸び)」を扱える。
-//     リッジの強さλも複数候補をバックテストして最も当たる値を自動選択する（固定値に頼らない＝ループを閉じる）。
-//  - 予測: 直近の特徴量(foodcourt_daily_features＝イベント＋天気＋曜日＋予想動員数)から、当日〜+14日を予測。
-//          売上=予測客数×予測客単価。客単価はイベント種別で調整する動的モデル(spend-model-v1)で推定する
-//          （従来の全期間中央値固定を廃止。イベント日はドリンク比率等で単価が変わるため）。
-//          天気は「雨フラグ」に加え、降水量(mm・連続値)と猛暑(最高気温≥30℃)フラグも特徴量に使う。
-//  - 自己採点: 拡張窓バックテスト（その日より前のデータだけで学習→当日を予測）で out-of-sample の MAPE(平均絶対誤差率) を
-//              A/Bそれぞれ算出し、誤差が小さい方を当日の本番予測に採用する。過去日は採用モデルの out-of-sample
-//              予測＋実績を forecast_predictions に保存し、画面/AIが「予測 vs 実績」で精度を確認できる。
-// 冪等: forecast_predictions の (target_date, tenant_name, metric) 一意で upsert。verify_jwt=false で pg_cron から起動。
-
+// 毎朝: 完了実績だけで学習し、5方式の当日〜14日先予測を改変不可の台帳へ発行する。
+// 昔の天候を使う再計算と、当時発行した本番予測の評価は分離。新方式の採用は後者でのみ判定する。
 type DbClient = ReturnType<typeof createClient>
 const BASE_TENANT = "MARUGO S"
-const MODEL_VERSION = "mult-factor-v3"  // レガシー乗算モデルの識別子（AI解説用係数は常にこのモデルで算出）
+const MODEL_VERSION = LEGACY_MODEL  // レガシー乗算モデルの識別子（AI解説用係数は常にこのモデルで算出）
 const SHRINK_K = 4        // 乗算モデルの係数のサンプルが少ないとき 1（影響なし）へ収縮する強さ
-const MIN_TRAIN = 4       // バックテストで予測を始める最小学習日数
-const HORIZON_DAYS = 14   // 何日先まで予測するか
-const PAST_WINDOW = 28    // 何日前までの「予測 vs 実績」を保存するか
-const MODEL_HOLDOUT_DAYS = 14 // モデル選択は直近期間で比較し、古い誤差に固定されないようにする
-const LAMBDA_GRID = [1, 2, 4, 8, 16]  // GLMのリッジ正則化強度の候補（バックテストで自動選択）
 
 // 会場×客層を区別する:
 //   "live"=東京ドーム本体コンサート(大), "dome"=ドーム本体のアマ野球/その他(大), pro=ドーム野球。
@@ -43,7 +17,7 @@ const LAMBDA_GRID = [1, 2, 4, 8, 16]  // GLMのリッジ正則化強度の候補
 const EVENT_MODEL_TYPES = ["soccer_pv", "japan", "pro", "live", "dome", "sports", "hall_kanadevia", "hall_korakuen", "hall_other"] as const
 const EVENT_TYPES = [...EVENT_MODEL_TYPES, "none"] as const
 type EvType = typeof EVENT_TYPES[number]
-type Feat = { date: string; dow: number; evType: EvType; rainy: boolean; precipMm: number; hotDay: boolean; attendance: number }
+type Feat = { date: string; dow: number; evType: EvType; rainy: boolean; precipMm: number; hotDay: boolean; attendance: number; weatherKnown?: boolean; featureMissing?: boolean }
 type Hist = Feat & { guests: number; sales: number; spend: number }
 type Factors = {
   meanG: number
@@ -59,8 +33,6 @@ type Factors = {
   evtN: Record<string, number>
   weatherN: Record<string, number>
 }
-// GLM(ポアソン回帰)のフィット結果。係数と、トレンド項の標準化に使った基準値（予測時に同じ変換を再現するため保持）。
-type GlmModel = { beta: number[]; startEpoch: number; meanT: number; sdT: number; spend: SpendModel }
 type SpendModel = {
   baseSpend: number
   eventFactors: Record<string, number>
@@ -88,323 +60,156 @@ type AdvancedStats = {
 Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? ""
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
-  if (!supabaseUrl || !serviceRoleKey) {
-    return json({ ok: false, error: "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing." }, 500)
-  }
+  if (!supabaseUrl || !serviceRoleKey) return json({ ok: false, error: "Missing service configuration" }, 500)
   const supabase = createClient(supabaseUrl, serviceRoleKey) as unknown as DbClient
-  if (!(await isInternalCronAuthorized(req, supabase))) {
-    return json({ ok: false, error: "Unauthorized" }, 401)
-  }
-  const url = new URL(req.url)
-  const dryRun = ["1", "true", "yes", "on"].includes((url.searchParams.get("dry_run") ?? "").toLowerCase())
+  if (!(await isInternalCronAuthorized(req, supabase))) return json({ ok: false, error: "Unauthorized" }, 401)
+  const dryRun = ["1", "true", "yes", "on"].includes((new URL(req.url).searchParams.get("dry_run") ?? "").toLowerCase())
+  const todayJst = jstDate(new Date()), hiDate = addDays(todayJst, 14)
+  try {
+    // First successful publication wins for each JST date. Retries cannot rewrite history.
+    const { data: existing, error: existingErr } = await supabase.from("foodcourt_forecast_issuances")
+      .select("id,chosen_model").eq("tenant_name", BASE_TENANT).eq("issued_on", todayJst).maybeSingle()
+    if (existingErr) throw new Error("issuance lookup failed: " + existingErr.message)
+    if (existing && !dryRun) return json({ ok: true, already_published: true, issuance_id: existing.id, model_version: existing.chosen_model })
 
-  const todayJst = jstDate(new Date())
-  const hiDate = addDays(todayJst, HORIZON_DAYS)
-
-  // 1) 特徴量（イベント＋天気＋曜日）を取得（過去〜未来）
-  const { data: featRows, error: featErr } = await supabase
-    .from("foodcourt_daily_features")
-    .select("business_date, iso_dow, has_event, has_pro_baseball, has_live, has_sports_broadcast, has_japan_match, has_soccer_pv, has_dome_main, has_kanadevia, has_korakuen, is_rainy, precipitation_mm, temp_max, max_expected_attendance")
-    .lte("business_date", hiDate)
-    .order("business_date", { ascending: true })
-  if (featErr) return json({ ok: false, error: `features load failed: ${featErr.message}` }, 500)
-  const featByDate = new Map<string, Feat>()
-  for (const r of (Array.isArray(featRows) ? featRows : [])) {
-    const d = String((r as { business_date?: unknown }).business_date ?? "").slice(0, 10)
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue
-    featByDate.set(d, {
-      date: d,
-      dow: Number((r as { iso_dow?: unknown }).iso_dow ?? 0) || isoDow(d),
-      evType: pickEvType(r as Record<string, unknown>),
-      rainy: (r as { is_rainy?: unknown }).is_rainy === true,
-      precipMm: Math.max(0, num((r as { precipitation_mm?: unknown }).precipitation_mm) ?? 0),
-      hotDay: (num((r as { temp_max?: unknown }).temp_max) ?? 0) >= 30,
-      attendance: Math.max(0, num((r as { max_expected_attendance?: unknown }).max_expected_attendance) ?? 0),
-    })
-  }
-
-  // 2) 実績（基準店 marugoS の日次 客数・売上）を「正本」ビューから取得。
-  //    foodcourt_base_daily＝レシート集計(売上は税抜net・日報と一致)＋手入力客数。日報が無い日も含むため、
-  //    日報未投稿で欠落していた日（例 6/14 等）も学習に入る。客単価は sales/guests で算出。
-  const { data: factRows, error: factErr } = await supabase
-    .from("foodcourt_base_daily")
-    .select("business_date, guests, sales")
-    .order("business_date", { ascending: true })
-  if (factErr) return json({ ok: false, error: `facts load failed: ${factErr.message}` }, 500)
-
-  const hist: Hist[] = []
-  for (const r of (Array.isArray(factRows) ? factRows : [])) {
-    const d = String((r as { business_date?: unknown }).business_date ?? "").slice(0, 10)
-    const guests = num((r as { guests?: unknown }).guests)
-    const sales = num((r as { sales?: unknown }).sales)
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || guests == null || guests <= 0 || sales == null) continue
-    const f = featByDate.get(d) ?? { date: d, dow: isoDow(d), evType: "none" as const, rainy: false, precipMm: 0, hotDay: false, attendance: 0 }
-    const spend = num((r as { avg_spend?: unknown }).avg_spend) ?? Math.round(sales / guests)
-    hist.push({ ...f, guests, sales, spend })
-  }
-  hist.sort((a, b) => a.date.localeCompare(b.date))
-
-  if (hist.length < 2) {
-    return json({ ok: true, skipped: true, reason: "not_enough_history", history_days: hist.length }, 200)
-  }
-
-  // 3) 拡張窓バックテスト（out-of-sample）で、乗算モデル(legacy)とポアソン回帰(GLM)を比較する。
-  //    a) まずGLMのリッジ強度λ候補を粗いストライドでバックテストし、最も当たるλを選ぶ（データが増えても計算量が
-  //       跳ね上がらないよう間引く。数十日規模の現状はストライド1＝全日評価）。
-  //    b) 選んだλのGLMと、レガシー乗算モデルを全日程でバックテストし、売上WAPEが小さい方を本番採用する。
-  //       MAPEだけだと客数/売上の小さい日が過大に効くため、経営影響に近いWAPEを主指標、MAPE/MAEを補助指標として記録する。
-  //    これが「誤差実績を使って次の予測方法そのものを自動選択する」閉じたループ。
-  type BackRow = { date: string; gPred: number; gAct: number; sPred: number; sAct: number }
-  const selectStride = hist.length > 60 ? 3 : 1
-  function runBacktest(predictor: (train: Hist[], target: Hist) => { guests: number; sales: number } | null, stride: number): BackRow[] {
-    const out: BackRow[] = []
-    for (let i = MIN_TRAIN; i < hist.length; i += stride) {
-      const train = hist.slice(0, i)
-      const p = predictor(train, hist[i])
-      if (!p) continue
-      out.push({ date: hist[i].date, gPred: p.guests, gAct: hist[i].guests, sPred: p.sales, sAct: hist[i].sales })
+    const [featRows, factRows, ledgerRows, weatherRows] = await Promise.all([
+      loadPages((lo, hi) => supabase.from("foodcourt_daily_features")
+        .select("business_date,iso_dow,has_event,has_pro_baseball,has_live,has_sports_broadcast,has_japan_match,has_soccer_pv,has_dome_main,has_kanadevia,has_korakuen,is_rainy,precipitation_mm,temp_max,max_expected_attendance,categories")
+        .lte("business_date", hiDate).order("business_date").range(lo, hi)),
+      loadPages((lo, hi) => supabase.from("foodcourt_base_daily").select("business_date,guests,sales")
+        .lt("business_date", todayJst).order("business_date").range(lo, hi)),
+      loadPages((lo, hi) => supabase.from("foodcourt_forecast_snapshots")
+        .select("*,foodcourt_forecast_issuances!inner(tenant_name,issued_on,issued_at,evaluation_eligible)")
+        .eq("foodcourt_forecast_issuances.tenant_name", BASE_TENANT)
+        .eq("foodcourt_forecast_issuances.evaluation_eligible", true)
+        .gte("target_date", addDays(todayJst, -56)).lt("target_date", todayJst)
+        .order("target_date").order("issuance_id").order("model_version").range(lo, hi)),
+      loadPages((lo, hi) => supabase.from("weather_daily").select("weather_date,source,updated_at")
+        .eq("location", "tokyo_dome").lte("weather_date", hiDate).order("weather_date").range(lo, hi)),
+    ])
+    const weatherByDate = new Map(weatherRows.map(r => [String(r.weather_date), r]))
+    const rawByDate = new Map(featRows.map(r => [String(r.business_date), r]))
+    const featByDate = new Map<string, Feat>()
+    for (const r of featRows) {
+      const d = String(r.business_date ?? "").slice(0, 10)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue
+      featByDate.set(d, { date: d, dow: Number(r.iso_dow) || isoDow(d), evType: pickEvType(r),
+        rainy: r.is_rainy === true, precipMm: Math.max(0, num(r.precipitation_mm) ?? 0),
+        hotDay: (num(r.temp_max) ?? 0) >= 30, attendance: Math.max(0, num(r.max_expected_attendance) ?? 0),
+        weatherKnown: num(r.precipitation_mm) != null && num(r.temp_max) != null, featureMissing: false })
     }
-    return out
-  }
-  const legacyPredictor = (train: Hist[], target: Hist) => predict(fit(train), target)
-  const glmPredictor = (lambda: number) => (train: Hist[], target: Hist): { guests: number; sales: number } | null => {
-    const m = fitGLM(train, lambda)
-    if (!m) return null
-    const guests = predictGLMGuests(m, target)
-    return { guests, sales: Math.max(0, Math.round(guests * predictSpend(m.spend, target))) }
-  }
-
-  let bestLambda = LAMBDA_GRID[0]
-  let bestLambdaWape = Infinity
-  const holdoutStartIndex = Math.max(MIN_TRAIN + 1, hist.length - MODEL_HOLDOUT_DAYS)
-  const holdoutStartDate = hist[Math.min(holdoutStartIndex, hist.length - 1)].date
-  for (const lambda of LAMBDA_GRID) {
-    const rows0 = runBacktest(glmPredictor(lambda), selectStride)
-    const tuningRows = rows0.filter((r) => r.date < holdoutStartDate)
-    const scoredRows = tuningRows.length >= 4 ? tuningRows : rows0
-    const w = wape(scoredRows.map((r) => [r.sPred, r.sAct]))
-    if (w != null && w < bestLambdaWape) { bestLambdaWape = w; bestLambda = lambda }
-  }
-
-  const backLegacy = runBacktest(legacyPredictor, 1)
-  const backGlm = runBacktest(glmPredictor(bestLambda), 1)
-  const mapeLegacyG = mape(backLegacy.map((b) => [b.gPred, b.gAct]))
-  const mapeLegacyS = mape(backLegacy.map((b) => [b.sPred, b.sAct]))
-  const mapeGlmG = mape(backGlm.map((b) => [b.gPred, b.gAct]))
-  const mapeGlmS = mape(backGlm.map((b) => [b.sPred, b.sAct]))
-  const wapeLegacyG = wape(backLegacy.map((b) => [b.gPred, b.gAct]))
-  const wapeLegacyS = wape(backLegacy.map((b) => [b.sPred, b.sAct]))
-  const wapeGlmG = wape(backGlm.map((b) => [b.gPred, b.gAct]))
-  const wapeGlmS = wape(backGlm.map((b) => [b.sPred, b.sAct]))
-  const maeLegacyG = mae(backLegacy.map((b) => [b.gPred, b.gAct]))
-  const maeLegacyS = mae(backLegacy.map((b) => [b.sPred, b.sAct]))
-  const maeGlmG = mae(backGlm.map((b) => [b.gPred, b.gAct]))
-  const maeGlmS = mae(backGlm.map((b) => [b.sPred, b.sAct]))
-  const recentLegacy = backLegacy.filter((b) => b.date >= holdoutStartDate)
-  const recentGlm = backGlm.filter((b) => b.date >= holdoutStartDate)
-  const rollingLegacyG = mape(recentLegacy.map((b) => [b.gPred, b.gAct]))
-  const rollingGlmG = mape(recentGlm.map((b) => [b.gPred, b.gAct]))
-  const rollingLegacyS = mape(recentLegacy.map((b) => [b.sPred, b.sAct]))
-  const rollingGlmS = mape(recentGlm.map((b) => [b.sPred, b.sAct]))
-  const rollingLegacyWapeG = wape(recentLegacy.map((b) => [b.gPred, b.gAct]))
-  const rollingGlmWapeG = wape(recentGlm.map((b) => [b.gPred, b.gAct]))
-  const rollingLegacyWapeS = wape(recentLegacy.map((b) => [b.sPred, b.sAct]))
-  const rollingGlmWapeS = wape(recentGlm.map((b) => [b.sPred, b.sAct]))
-  // λはholdoutより前で選び、モデル同士は直近holdoutの売上WAPEで比較する。データ不足時だけ全期間売上WAPEへフォールバック。
-  const glmWins = chooseFoodCourtGlm(rollingLegacyWapeS, rollingGlmWapeS, wapeLegacyS, wapeGlmS)
-
-  const back = glmWins ? backGlm : backLegacy
-  const mapeG = glmWins ? mapeGlmG : mapeLegacyG
-  const mapeS = mape(back.map((b) => [b.sPred, b.sAct]))
-  const wapeG = glmWins ? wapeGlmG : wapeLegacyG
-  const wapeS = glmWins ? wapeGlmS : wapeLegacyS
-  const maeG = glmWins ? maeGlmG : maeLegacyG
-  const maeS = glmWins ? maeGlmS : maeLegacyS
-  const recentBack = back.filter((b) => b.date >= holdoutStartDate)
-  const rollingMapeG = mape(recentBack.map((b) => [b.gPred, b.gAct]))
-  const rollingMapeS = mape(recentBack.map((b) => [b.sPred, b.sAct]))
-  const rollingWapeG = wape(recentBack.map((b) => [b.gPred, b.gAct]))
-  const rollingWapeS = wape(recentBack.map((b) => [b.sPred, b.sAct]))
-  const rollingMaeG = mae(recentBack.map((b) => [b.gPred, b.gAct]))
-  const rollingMaeS = mae(recentBack.map((b) => [b.sPred, b.sAct]))
-  const bandG = mapeG ?? 0.25 // 予測区間の幅（採用モデルのバックテスト誤差率。無ければ暫定±25%）
-  const bandS = mapeS ?? 0.25
-  const chosenModelVersion = glmWins ? `glm-poisson-v5(lambda=${bestLambda})` : MODEL_VERSION
-
-  // 4) 本予測: 全データで学習し、当日〜+14日を予測（採用モデルを使用）。過去日は out-of-sample 予測＋実績を保存。
-  //    AI解説(foodcourt_forecast_factors)向けの乗算係数は、採否に関係なく常に計算して維持する（解釈用の唯一の係数源）。
-  const facFull = fit(hist)
-  const glmFull = glmWins ? fitGLM(hist, bestLambda) : null
-  const lastActual = hist[hist.length - 1].date
-  const rows: Array<Record<string, unknown>> = []
-  const backByDate = new Map(back.map((b) => [b.date, b]))
-  const upcoming: Array<{ date: string; guests: number; sales: number; evType: string; rainy: boolean }> = []
-
-  for (const [d, f] of Array.from(featByDate.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
-    if (d < addDays(todayJst, -PAST_WINDOW)) continue
-    if (d > hiDate) continue
-    const isPast = d <= lastActual
-    let gPred: number, sPred: number, gAct: number | null = null, sAct: number | null = null
-    if (isPast) {
-      const b = backByDate.get(d)
-      const h = hist.find((x) => x.date === d)
-      if (!b || !h) continue // 学習初期(MIN_TRAIN未満)で out-of-sample 予測が無い日、または間引かれた日はスキップ
-      gPred = b.gPred; sPred = b.sPred; gAct = h.guests; sAct = h.sales
-    } else if (glmWins && glmFull) {
-      const guests = predictGLMGuests(glmFull, f)
-      gPred = guests; sPred = Math.max(0, Math.round(guests * predictSpend(glmFull.spend, f)))
-      upcoming.push({ date: d, guests: gPred, sales: sPred, evType: f.evType, rainy: f.rainy })
-    } else {
-      const p = predict(facFull, f)
-      gPred = p.guests; sPred = p.sales
-      upcoming.push({ date: d, guests: gPred, sales: sPred, evType: f.evType, rainy: f.rainy })
+    const fallback = (d: string): Feat => ({ date: d, dow: isoDow(d), evType: "none", rainy: false,
+      precipMm: 0, hotDay: false, attendance: 0, weatherKnown: false, featureMissing: true })
+    const hist: Hist[] = []
+    let excludedInvalid = 0
+    for (const r of factRows) {
+      const d = String(r.business_date ?? "").slice(0, 10), guests = num(r.guests), sales = num(r.sales)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d >= todayJst || guests == null || guests < 0 || sales == null || sales < 0
+        || (guests === 0 && sales > 0)) { excludedInvalid++; continue }
+      hist.push({ ...(featByDate.get(d) ?? fallback(d)), guests, sales, spend: guests > 0 ? sales / guests : 0 })
     }
-    const featJson = { dow: f.dow, evType: f.evType, rainy: f.rainy, precipMm: f.precipMm, hotDay: f.hotDay, attendance: f.attendance }
-    rows.push({ target_date: d, tenant_name: BASE_TENANT, tenant_code: null, metric: "guests", predicted: gPred, predicted_low: Math.max(0, Math.round(gPred * (1 - bandG))), predicted_high: Math.round(gPred * (1 + bandG)), model_version: chosenModelVersion, features: featJson, actual: gAct })
-    rows.push({ target_date: d, tenant_name: BASE_TENANT, tenant_code: null, metric: "sales", predicted: sPred, predicted_low: Math.max(0, Math.round(sPred * (1 - bandS))), predicted_high: Math.round(sPred * (1 + bandS)), model_version: chosenModelVersion, features: featJson, actual: sAct })
+    hist.sort((a, b) => a.date.localeCompare(b.date))
+    if (hist.length < 28) return json({ ok: true, skipped: true, reason: "need_28_valid_training_days", history_days: hist.length })
+    const dataQuality = {
+      valid_days: hist.length, excluded_invalid_days: excludedInvalid,
+      zero_actual_days: hist.filter(h => h.guests === 0 && h.sales === 0).length,
+      unknown_weather_days: hist.filter(h => !h.weatherKnown).length,
+      missing_feature_days: hist.filter(h => h.featureMissing).length,
+      latest_actual: hist.at(-1)!.date, actual_lag_days: dateDistance(todayJst, hist.at(-1)!.date),
+      limitations: ["Past weather/event features are revised data, not historical forecasts.",
+        "Observed attendance is not used by candidate models.", "Zero actuals are retained; unrecorded closures cannot be inferred."],
+    }
+    // Never quietly issue forecasts against stale or incomplete operational actuals.
+    if (dataQuality.actual_lag_days > 2) return json({ ok: false, error: "Actual data is stale; import completed sales first.", data_quality: dataQuality }, 409)
+    const legacy: Predictor = (train, target) => {
+      const f = fit(train as Hist[])
+      if (target.weatherKnown !== false) return predict(f, target as Feat)
+      const known = train.filter(h => h.weatherKnown !== false), wetWeight = known.length ? known.filter(h => h.rainy).length / known.length : 0.5
+      const wet = predict(f, { ...target, rainy: true } as Feat), dry = predict(f, { ...target, rainy: false } as Feat)
+      return { guests: wet.guests * wetWeight + dry.guests * (1 - wetWeight), sales: wet.sales * wetWeight + dry.sales * (1 - wetWeight) }
+    }
+    const retrospectiveRows = retrospective(hist, todayJst, legacy)
+    const prospectiveRows = scoreLedger(ledgerRows as unknown as LedgerRow[], hist, todayJst)
+    const { data: previous, error: previousErr } = await supabase.from("foodcourt_forecast_factors")
+      .select("model_selection").eq("tenant_name", BASE_TENANT).maybeSingle()
+    if (previousErr) throw new Error("model state load failed: " + previousErr.message)
+    const prev = (previous?.model_selection ?? {}) as { chosen?: string; last_promoted?: string }
+    const selection = selectChampion(prospectiveRows, todayJst, prev.chosen, prev.last_promoted)
+    const evaluation = {
+      version: FORECAST_ENGINE_VERSION, selection,
+      primary: { kind: "issued", window_days: 28, horizon_days: 1 },
+      prospective: evaluationReport(prospectiveRows, todayJst),
+      retrospective: evaluationReport(retrospectiveRows, todayJst),
+      retrospective_warning: "参考再計算: 学習実績は発行日より前のみ。天候・イベントは現在の更新済み値のため本番精度の証拠ではありません。",
+      interval_warning: "予測幅は同じ先行日数の過去誤差による経験的80%区間。時系列依存・天候予報誤差により80%を保証しません。",
+    }
+    const snapshots: Array<Record<string, unknown>> = []
+    const upcoming: Array<Record<string, unknown>> = []
+    for (let horizon = 0; horizon <= 14; horizon++) {
+      const date = addDays(todayJst, horizon), f = featByDate.get(date) ?? fallback(date)
+      const preds = candidatePredictions(hist, f, legacy)
+      for (const model of MODEL_IDS) {
+        // Only already-observed errors calibrate ranges; never residuals from fitting the target.
+        const issued = prospectiveRows.filter(r => r.model === model && r.horizon === horizon)
+        const reconstructed = retrospectiveRows.filter(r => r.model === model && r.horizon === horizon)
+        const calibration = issued.length >= 20 ? issued : reconstructed
+        const g = predictionInterval(preds[model].guests, calibration, "guests")
+        const s = predictionInterval(preds[model].sales, calibration, "sales")
+        const input = { ...f, raw_features: rawByDate.get(date) ?? null, weather_provenance: weatherByDate.get(date) ?? null,
+          training_days: hist.length, train_through: hist.at(-1)!.date,
+          interval_source: issued.length >= 20 ? "issued" : "retrospective_reference", interval_n: g.n, nominal_coverage: 0.8 }
+        snapshots.push({ target_date: date, horizon_days: horizon, model_version: model, ...preds[model],
+          guests_low: g.low, guests_high: g.high, sales_low: s.low, sales_high: s.high, input_snapshot: input })
+        if (model === selection.chosen) upcoming.push({ date, ...preds[model], evType: f.evType, rainy: f.weatherKnown ? f.rainy : null, guests_low: g.low, guests_high: g.high, sales_low: s.low, sales_high: s.high, feature_missing: f.featureMissing })
+      }
+    }
+    const chosenBack = retrospectiveRows.filter(r => r.model === selection.chosen && r.horizon === 1)
+    const recentBack = chosenBack.filter(r => r.date >= addDays(todayJst, -28))
+    const overall = score(chosenBack), recent = score(recentBack)
+    const legacyBack = retrospectiveRows.filter(r => r.model === LEGACY_MODEL && r.horizon === 1), legacyScore = score(legacyBack)
+    const fac = fit(hist)
+    const modelSelection = { ...selection, engine_version: FORECAST_ENGINE_VERSION,
+      selection_metric: "paired_issued_guests_and_sales_mae", holdout_days: 28,
+      legacy_mape_guests: legacyScore.guests.mape, legacy_mape_sales: legacyScore.sales.mape,
+      interpretation_only: true, forecast_model: selection.chosen, evaluation }
+    const history = {
+      model_version: selection.chosen, history_days: hist.length, backtest_days: chosenBack.length,
+      mape_guests: overall.guests.mape, mape_sales: overall.sales.mape, wape_guests: overall.guests.wape, wape_sales: overall.sales.wape,
+      mae_guests: overall.guests.mae, mae_sales: overall.sales.mae, rolling_mape_guests: recent.guests.mape, rolling_mape_sales: recent.sales.mape,
+      rolling_wape_guests: recent.guests.wape, rolling_wape_sales: recent.sales.wape, rolling_mae_guests: recent.guests.mae, rolling_mae_sales: recent.sales.mae,
+      mean_guests: fac.meanG,
+    }
+    const factors = {
+      model_version: MODEL_VERSION, mean_guests: fac.meanG, wday_factors: fac.wday, wday_counts: fac.wdayN,
+      event_factors: fac.evt, event_counts: fac.evtN, weather_factors: fac.weather, weather_counts: fac.weatherN,
+      median_spend: fac.spend, history_days: hist.length, backtest_days: legacyBack.length,
+      mape_guests: legacyScore.guests.mape, mape_sales: legacyScore.sales.mape,
+      rolling_mape_guests: recent.guests.mape, rolling_mape_sales: recent.sales.mape,
+      model_selection: modelSelection,
+      advanced_stats: computeAdvancedStats(hist, chosenBack.map(r => ({ date: r.date, gPred: r.guests, gAct: r.actualGuests, sPred: r.sales, sAct: r.actualSales }))),
+    }
+    const payload = { tenant_name: BASE_TENANT, issued_on: todayJst, train_through: hist.at(-1)!.date,
+      engine_version: FORECAST_ENGINE_VERSION, chosen_model: selection.chosen, evaluation, data_quality: dataQuality, snapshots, history, factors }
+    if (dryRun) return json({ ok: true, dry_run: true, ...history, evaluation, data_quality: dataQuality, upcoming, snapshots_to_insert: snapshots.length })
+    const { data: published, error: publishErr } = await supabase.rpc("publish_foodcourt_forecast_v2", { payload })
+    if (publishErr) throw new Error("atomic publication failed: " + publishErr.message)
+    return json({ ...(published as Record<string, unknown>), model_version: selection.chosen, history_days: hist.length, selection, data_quality: dataQuality, upcoming })
+  } catch (error) {
+    console.error("foodcourt forecast failed:", error instanceof Error ? error.message : String(error))
+    return json({ ok: false, error: error instanceof Error ? error.message : "forecast_failed" }, 500)
   }
-
-  // 統計拡張(stats-ext-v1): 予測には使わない。AI解説の解釈精度を上げる材料を毎晩まとめて再計算。
-  // 残差バイアスは「実際に採用されたモデル」のバックテスト結果(back)を使う＝AIに見せる弱点が実態と一致する。
-  const advStats = computeAdvancedStats(hist, back)
-
-  const summary = {
-    history_days: hist.length,
-    backtest_days: back.length,
-    mape_guests: pct1(mapeG), // %
-    mape_sales: pct1(mapeS),
-    wape_guests: pct1(wapeG),
-    wape_sales: pct1(wapeS),
-    mae_guests: round0(maeG),
-    mae_sales: round0(maeS),
-    rolling_mape_guests: pct1(rollingMapeG),
-    rolling_mape_sales: pct1(rollingMapeS),
-    rolling_wape_guests: pct1(rollingWapeG),
-    rolling_wape_sales: pct1(rollingWapeS),
-    rolling_mae_guests: round0(rollingMaeG),
-    rolling_mae_sales: round0(rollingMaeS),
-    upcoming: upcoming.slice(0, HORIZON_DAYS),
-    rows_to_upsert: rows.length,
-    model_selection: {
-      chosen: chosenModelVersion,
-      glm_wins: glmWins,
-      glm_lambda: bestLambda,
-      selection_metric: "sales_wape",
-      legacy_wape_sales: pct1(wapeLegacyS),
-      glm_wape_sales: pct1(wapeGlmS),
-      recent_legacy_wape_sales: pct1(rollingLegacyWapeS),
-      recent_glm_wape_sales: pct1(rollingGlmWapeS),
-      legacy_mape_guests: pct1(mapeLegacyG),
-      glm_mape_guests: pct1(mapeGlmG),
-      legacy_mape_sales: pct1(mapeLegacyS),
-      glm_mape_sales: pct1(mapeGlmS),
-      recent_legacy_mape_guests: pct1(rollingLegacyG),
-      recent_glm_mape_guests: pct1(rollingGlmG),
-      recent_legacy_mape_sales: pct1(rollingLegacyS),
-      recent_glm_mape_sales: pct1(rollingGlmS),
-      holdout_days: recentBack.length,
-    },
-  }
-
-  if (dryRun) return json({ ok: true, dry_run: true, model_version: chosenModelVersion, ...summary, factors: facFull, glm_factors: glmFull, advanced_stats: advStats }, 200)
-
-  if (rows.length) {
-    const { error: upErr } = await supabase
-      .from("forecast_predictions")
-      .upsert(rows, { onConflict: "target_date,tenant_name,metric" })
-    if (upErr) return json({ ok: false, error: `forecast upsert failed: ${upErr.message}`, rows: rows.length }, 500)
-  }
-
-  // フィット済み係数(バックテスト自己採点つき)をAI解説側からも参照できるよう保存する。
-  // AI解説(foodcourt_compare.ts)の「統計的パターン」は、この唯一のモデル結果を使う（単変量の別集計と二重化しない）。
-  const { error: factorsErr } = await supabase
-    .from("foodcourt_forecast_factors")
-    .upsert({
-      tenant_name: BASE_TENANT,
-      model_version: MODEL_VERSION,
-      mean_guests: facFull.meanG,
-      wday_factors: facFull.wday,
-      wday_counts: facFull.wdayN,
-      event_factors: facFull.evt,
-      event_counts: facFull.evtN,
-      weather_factors: facFull.weather,
-      weather_counts: facFull.weatherN,
-      median_spend: facFull.spend,
-      history_days: hist.length,
-      backtest_days: backLegacy.length,
-      mape_guests: mapeLegacyG,
-      mape_sales: mapeLegacyS,
-      rolling_mape_guests: rollingMapeG,
-      rolling_mape_sales: rollingMapeS,
-      advanced_stats: advStats,
-      // 実際に forecast_predictions を生成したモデルの情報（AI解説の乗算係数とは別枠。透明性のための記録）。
-      model_selection: {
-        chosen: chosenModelVersion,
-        glm_wins: glmWins,
-        glm_lambda: bestLambda,
-        selection_metric: "sales_wape",
-        legacy_mape_guests: mapeLegacyG,
-        legacy_mape_sales: mapeLegacyS,
-        glm_mape_guests: mapeGlmG,
-        glm_mape_sales: mapeGlmS,
-        legacy_wape_guests: wapeLegacyG,
-        legacy_wape_sales: wapeLegacyS,
-        glm_wape_guests: wapeGlmG,
-        glm_wape_sales: wapeGlmS,
-        legacy_mae_guests: maeLegacyG,
-        legacy_mae_sales: maeLegacyS,
-        glm_mae_guests: maeGlmG,
-        glm_mae_sales: maeGlmS,
-        recent_legacy_mape_guests: rollingLegacyG,
-        recent_glm_mape_guests: rollingGlmG,
-        recent_legacy_mape_sales: rollingLegacyS,
-        recent_glm_mape_sales: rollingGlmS,
-        recent_legacy_wape_guests: rollingLegacyWapeG,
-        recent_glm_wape_guests: rollingGlmWapeG,
-        recent_legacy_wape_sales: rollingLegacyWapeS,
-        recent_glm_wape_sales: rollingGlmWapeS,
-        holdout_days: recentBack.length,
-        spend_model: {
-          version: "spend-model-v1",
-          base_spend: facFull.spend,
-          event_factors: facFull.spendEvt,
-          event_counts: facFull.spendEvtN,
-          weather_factors: facFull.spendWeather,
-          weather_counts: facFull.spendWeatherN,
-        },
-      },
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "tenant_name" })
-  if (factorsErr) console.error("foodcourt_forecast_factors upsert failed:", factorsErr.message)
-
-  // 学習の進化トラッキング: 今日の学習結果を1行追記（同日再実行は上書き＝冪等）。
-  // 「賢くなっているか」を実際の本番予測（採用モデル）の精度で追うため、ここは chosenModelVersion / 採用モデルのMAPEを記録する
-  // （AI解説用の乗算係数は常にレガシーだが、本番の予測精度はGLMが勝てばGLMのものを反映させる）。
-  const { error: histErr } = await supabase
-    .from("foodcourt_forecast_history")
-    .upsert({
-      tenant_name: BASE_TENANT,
-      log_date: todayJst,
-      model_version: chosenModelVersion,
-      history_days: hist.length,
-      backtest_days: back.length,
-      mape_guests: mapeG,
-      mape_sales: mapeS,
-      wape_guests: wapeG,
-      wape_sales: wapeS,
-      mae_guests: maeG,
-      mae_sales: maeS,
-      rolling_mape_guests: rollingMapeG,
-      rolling_mape_sales: rollingMapeS,
-      rolling_wape_guests: rollingWapeG,
-      rolling_wape_sales: rollingWapeS,
-      rolling_mae_guests: rollingMaeG,
-      rolling_mae_sales: rollingMaeS,
-      mean_guests: facFull.meanG,
-    }, { onConflict: "tenant_name,log_date" })
-  if (histErr) console.error("foodcourt_forecast_history upsert failed:", histErr.message)
-  return json({ ok: true, model_version: chosenModelVersion, ...summary }, 200)
 })
+
+async function loadPages(make: (lo: number, hi: number) => PromiseLike<{ data: unknown; error: { message: string } | null }>): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = []
+  for (let lo = 0; ; lo += 1000) {
+    const { data, error } = await make(lo, lo + 999)
+    if (error) throw new Error(error.message)
+    const page = Array.isArray(data) ? data as Record<string, unknown>[] : []
+    out.push(...page)
+    if (page.length < 1000) return out
+  }
+}
 
 // --- model ---
 function fit(h: Hist[]): Factors {
@@ -426,7 +231,7 @@ function fit(h: Hist[]): Factors {
   const weather: Record<string, number> = {}
   const weatherN: Record<string, number> = {}
   for (const w of ["rainy", "dry"]) {
-    const xs = h.filter((x) => (w === "rainy" ? x.rainy : !x.rainy)).map((x) => x.guests)
+    const xs = h.filter((x) => x.weatherKnown !== false && (w === "rainy" ? x.rainy : !x.rainy)).map((x) => x.guests)
     weather[w] = shrink(meanG > 0 && xs.length ? (avg(xs)! / meanG) : 1, xs.length)
     weatherN[w] = xs.length
   }
@@ -469,7 +274,8 @@ function spendWeatherKey(f: Feat): string {
   return "normal"
 }
 
-function fitSpendModel(h: Hist[]): SpendModel {
+function fitSpendModel(history: Hist[]): SpendModel {
+  const h = history.filter(x => x.guests > 0 && x.spend > 0)
   const baseSpend = median(h.map((x) => x.spend)) ?? 0
   const eventFactors: Record<string, number> = {}
   const eventCounts: Record<string, number> = {}
@@ -502,163 +308,6 @@ function shrinkSpend(rawFactor: number, n: number): number {
   // さらに極端な外れ値で売上予測が暴れないよう安全な範囲に収める。
   const factor = shrink(rawFactor, n, SHRINK_K + 2)
   return Math.max(0.65, Math.min(1.45, factor))
-}
-
-// --- GLM(ポアソン回帰・IRLS) ---
-// 客数(カウントデータ)を log(客数) = 切片 + 曜日 + イベント種別 + 天気 + log(1+降水量)
-// + 猛暑(最高気温30℃以上) + log(1+予想動員数) + トレンド(時間)
-// の対数線形モデルで推定する。乗算モデル(fit/predict)と違い、
-//  - 予想動員数という連続値の特徴量をそのまま扱える（イベント種別の粗い分類だけでなく規模を反映）
-//  - 雨の有無だけでなく、降水量と猛暑の影響も連続/閾値特徴量として反映できる
-//  - トレンド項で「開店後に客数が伸び続けている」段階的な変化を捉えられる
-//  - リッジ正則化(λ)が、サンプルの少ない係数を0(＝乗算モデルでいう「1倍＝無効果」)へ寄せる役割を、
-//    全特徴量に対して統一的な統計的裏付けをもって行う（乗算モデルの shrink() に相当するが連続値にも効く）。
-const WDAY_LEVELS = [2, 3, 4, 5, 6, 7] as const   // 曜日ダミー（基準=1=月曜）
-const EVT_LEVELS = EVENT_MODEL_TYPES // イベント/会場×客層ダミー（基準=none）
-// 大型イベント＝当店の来客が最も跳ねる東京ドーム本体系(プロ野球/本体ライブ/本体その他)。交互作用の主対象。
-const BIG_EVTYPES = new Set<EvType>(["pro", "live", "dome"])
-function isBigEvType(t: EvType): boolean { return BIG_EVTYPES.has(t) }
-// 交互作用項(interaction-v1): 主効果だけでは表せない「条件の重なりで効き方が変わる」領域を明示的に足す。
-//  1) 土日×大型イベント（週末の大型は平日と伸び方が違う）
-//  2) 雨×大型イベント（大型集客日は雨でも来る＝雨の減衰が弱まる/強まる）
-//  3) 猛暑×大型イベント（猛暑日の大型はドリンク/休憩需要で当店利用が変わる）
-// フル曜日×イベント(6×9)は小データで過学習するため、経営的に意味の大きい3項に絞る。リッジがスパース列を0へ寄せる。
-const INTERACTION_COLS = 3
-// 季節性/非線形トレンド(season-trend-v1):
-//  1) トレンド二次項 trend^2（開店効果が徐々に飽和する/加速する非線形成長を対数線形の一定成長率より柔軟に捉える）
-//  2)+3) 年周期の季節性 sin/cos(2π×年内通日/365.25)（月別ダミー12本より過学習しにくい2列で四季の波を表す。データが1年に近づくほど効く）
-// いずれも小データではリッジが0（＝季節性/非線形なし）へ寄せるため安全。前年同曜日比(#8後半)は1年蓄積後に別途追加する。
-const SEASON_COLS = 3
-const GLM_COLS = 1 + WDAY_LEVELS.length + EVT_LEVELS.length + 1 /*rainy*/ + 1 /*precip*/ + 1 /*hot*/ + 1 /*attendance*/ + 1 /*trend*/ + INTERACTION_COLS + SEASON_COLS
-
-// 特徴量1件を設計行列の1行に変換する（trendStdは呼び出し側で標準化済みの値を渡す）。
-function designRow(f: Feat, trendStd: number): number[] {
-  const row = new Array(GLM_COLS).fill(0)
-  row[0] = 1
-  const wi = WDAY_LEVELS.indexOf(f.dow as typeof WDAY_LEVELS[number])
-  if (wi >= 0) row[1 + wi] = 1
-  const ei = EVT_LEVELS.indexOf(f.evType as typeof EVT_LEVELS[number])
-  if (ei >= 0) row[1 + WDAY_LEVELS.length + ei] = 1
-  const weatherStart = 1 + WDAY_LEVELS.length + EVT_LEVELS.length
-  row[weatherStart] = f.rainy ? 1 : 0
-  row[weatherStart + 1] = Math.log1p(Math.max(0, f.precipMm || 0))
-  row[weatherStart + 2] = f.hotDay ? 1 : 0
-  row[weatherStart + 3] = Math.log1p(Math.max(0, f.attendance || 0))
-  row[weatherStart + 4] = trendStd
-  // --- 交互作用項(interaction-v1) ---
-  const interStart = weatherStart + 5
-  const big = isBigEvType(f.evType) ? 1 : 0
-  const weekend = (f.dow === 6 || f.dow === 7) ? 1 : 0
-  row[interStart] = weekend * big              // 土日×大型イベント
-  row[interStart + 1] = (f.rainy ? 1 : 0) * big // 雨×大型イベント
-  row[interStart + 2] = (f.hotDay ? 1 : 0) * big // 猛暑×大型イベント
-  // --- 非線形トレンド + 季節性(season-trend-v1) ---
-  const seasonStart = interStart + INTERACTION_COLS
-  row[seasonStart] = trendStd * trendStd        // トレンド二次項（飽和/加速）
-  const ang = 2 * Math.PI * (dayOfYear(f.date) / 365.25)
-  row[seasonStart + 1] = Math.sin(ang)          // 年周期季節性(sin)
-  row[seasonStart + 2] = Math.cos(ang)          // 年周期季節性(cos)
-  return row
-}
-// 日付を「1970-01-01からの通算日数」に変換（トレンド項の時間軸に使う）。
-function epochDay(ymd: string): number {
-  const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-  if (!m) return 0
-  return Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000)
-}
-// 年内通日(1-366)。年周期の季節性(sin/cos)の位相に使う。
-function dayOfYear(ymd: string): number {
-  const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-  if (!m) return 0
-  const start = Date.UTC(+m[1], 0, 1)
-  const cur = Date.UTC(+m[1], +m[2] - 1, +m[3])
-  return Math.floor((cur - start) / 86400000) + 1
-}
-// 連立一次方程式 A x = b をガウスの消去法(部分ピボット選択)で解く。特異(ほぼ0ピボット)ならnull。
-function solveLinearSystem(Ain: number[][], bin: number[]): number[] | null {
-  const n = bin.length
-  const A = Ain.map((row) => row.slice())
-  const b = bin.slice()
-  for (let col = 0; col < n; col++) {
-    let piv = col
-    let best = Math.abs(A[col][col])
-    for (let r = col + 1; r < n; r++) { const v = Math.abs(A[r][col]); if (v > best) { best = v; piv = r } }
-    if (best < 1e-10) return null
-    if (piv !== col) { const t = A[col]; A[col] = A[piv]; A[piv] = t; const tb = b[col]; b[col] = b[piv]; b[piv] = tb }
-    const pv = A[col][col]
-    for (let r = col + 1; r < n; r++) {
-      const f = A[r][col] / pv
-      if (f === 0) continue
-      for (let c = col; c < n; c++) A[r][c] -= f * A[col][c]
-      b[r] -= f * b[col]
-    }
-  }
-  const x = new Array(n).fill(0)
-  for (let r = n - 1; r >= 0; r--) {
-    let s = b[r]
-    for (let c = r + 1; c < n; c++) s -= A[r][c] * x[c]
-    x[r] = s / A[r][r]
-  }
-  return x
-}
-// ポアソン回帰をIRLS(反復重み付き最小二乗)で学習する。リッジ(λ、切片は正則化しない)で過学習を防ぐ。
-// トレンド項は学習ウィンドウ内の通算日数を標準化して使う（予測時も同じ基準(startEpoch/meanT/sdT)で変換する）。
-function fitGLM(train: Hist[], lambda: number): GlmModel | null {
-  const n = train.length
-  if (n < 2) return null
-  const startEpoch = epochDay(train[0].date)
-  const epochs = train.map((h) => epochDay(h.date) - startEpoch)
-  const meanT = avg(epochs) ?? 0
-  const sdT = sampleSd(epochs) || 1
-  const X = train.map((h, i) => designRow(h, (epochs[i] - meanT) / sdT))
-  const y = train.map((h) => h.guests)
-  const p = X[0].length
-  let beta = new Array(p).fill(0)
-  beta[0] = Math.log(Math.max(1, avg(y) ?? 1))
-  for (let iter = 0; iter < 25; iter++) {
-    const W = new Array(n); const z = new Array(n)
-    for (let i = 0; i < n; i++) {
-      let eta = 0
-      for (let a = 0; a < p; a++) eta += X[i][a] * beta[a]
-      const mu = Math.exp(Math.max(-20, Math.min(20, eta)))
-      const muC = Math.max(mu, 1e-6)
-      W[i] = muC
-      z[i] = eta + (y[i] - muC) / muC
-    }
-    const XtWX: number[][] = Array.from({ length: p }, () => new Array(p).fill(0))
-    const XtWz: number[] = new Array(p).fill(0)
-    for (let i = 0; i < n; i++) {
-      const xi = X[i], wi = W[i], zi = z[i]
-      for (let a = 0; a < p; a++) {
-        const xa = xi[a]
-        if (xa === 0) continue // ダミー列のスパース性を利用して省略（速度対策）
-        XtWz[a] += xa * wi * zi
-        for (let b = 0; b < p; b++) {
-          const xb = xi[b]
-          if (xb === 0) continue
-          XtWX[a][b] += xa * wi * xb
-        }
-      }
-    }
-    for (let a = 1; a < p; a++) XtWX[a][a] += lambda // リッジ（切片は正則化しない）
-    const newBeta = solveLinearSystem(XtWX, XtWz)
-    if (!newBeta) break // 特異になったら直前のbetaのまま打ち切り
-    let diff = 0
-    for (let a = 0; a < p; a++) diff += Math.abs(newBeta[a] - beta[a])
-    beta = newBeta
-    if (diff < 1e-6) break
-  }
-  const spend = fitSpendModel(train)
-  return { beta, startEpoch, meanT, sdT, spend }
-}
-// 学習済みGLMで客数を予測する（学習時と同じトレンド標準化を再現する）。
-function predictGLMGuests(m: GlmModel, f: Feat): number {
-  const t = (epochDay(f.date) - m.startEpoch - m.meanT) / m.sdT
-  const row = designRow(f, t)
-  let eta = 0
-  for (let a = 0; a < row.length; a++) eta += row[a] * m.beta[a]
-  const mu = Math.exp(Math.max(-20, Math.min(20, eta)))
-  return Math.max(0, Math.round(mu))
 }
 
 // --- 統計拡張(stats-ext-v1) ---
@@ -869,7 +518,7 @@ function mape(pairs: Array<[number, number]>): number | null {
 function wape(pairs: Array<[number, number]>): number | null {
   let num = 0, den = 0
   for (const [p, a] of pairs) {
-    if (!(a > 0)) continue
+    if (!Number.isFinite(p) || !Number.isFinite(a) || a < 0) continue
     num += Math.abs(p - a)
     den += a
   }

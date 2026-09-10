@@ -4,6 +4,10 @@ export type ExtractedTokyoDomeEvent = {
   category: string
 }
 
+export function normalizeBaseballCategory(title: string, category: string): string {
+  return /都市対抗|社会人野球|全日本クラブ野球|大学野球|高校野球/.test(title) ? "アマ野球" : category
+}
+
 // The official calendar uses both "(月)" and holiday labels such as
 // "(月・祝)". Treat both forms as date-cell boundaries.
 function isWeekdayLabel(value: string): boolean {
@@ -72,7 +76,7 @@ export function parseTokyoDomeSchedule(text: string): ExtractedTokyoDomeEvent[] 
       const key = `${date}__${cleanTitle}`
       if (seen.has(key)) continue
       seen.add(key)
-      events.push({ event_date: date, title: cleanTitle, category })
+      events.push({ event_date: date, title: cleanTitle, category: normalizeBaseballCategory(cleanTitle, category) })
     }
     i = next - 1
   }

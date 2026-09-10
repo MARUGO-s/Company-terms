@@ -3190,7 +3190,7 @@ Deno.serve(async (req, info) => {
       const tenantName = storeKeyNorm === "marugos" ? "MARUGO S" : storeKey
       const { data, error } = await supabase
         .from("foodcourt_forecast_history")
-        .select("log_date, model_version, history_days, backtest_days, mape_guests, mape_sales, rolling_mape_guests, rolling_mape_sales, mean_guests, created_at")
+        .select("log_date, model_version, history_days, backtest_days, mape_guests, mape_sales, wape_guests, wape_sales, mae_guests, mae_sales, rolling_mape_guests, rolling_mape_sales, rolling_wape_guests, rolling_wape_sales, rolling_mae_guests, rolling_mae_sales, mean_guests, evaluation_version, created_at")
         .eq("tenant_name", tenantName)
         .order("log_date", { ascending: true })
       if (error) return json({ error: error.message }, 500)
@@ -3210,10 +3210,27 @@ Deno.serve(async (req, info) => {
 
       const passingScore = normalizeFoodCourtPassingScore(passSetting?.setting_value) ?? 65
 
+      const { data: issuance, error: issuanceError } = await supabase
+        .from("foodcourt_forecast_issuances")
+        .select("id, issued_on, issued_at, evaluation_eligible, train_through, engine_version, chosen_model, evaluation, data_quality")
+        .eq("tenant_name", tenantName)
+        .order("issued_on", { ascending: false }).limit(1).maybeSingle()
+      if (issuanceError) return json({ error: issuanceError.message }, 500)
+
+      let upcomingForecasts: unknown[] = []
+      if (issuance) {
+        const { data: forecastRows, error: forecastError } = await supabase.from("foodcourt_forecast_snapshots")
+          .select("target_date, horizon_days, guests, sales, guests_low, guests_high, sales_low, sales_high, input_snapshot")
+          .eq("issuance_id", issuance.id).eq("model_version", issuance.chosen_model).order("target_date").limit(15)
+        if (forecastError) return json({ error: forecastError.message }, 500)
+        upcomingForecasts = forecastRows ?? []
+      }
+
       return json({
         rows: data ?? [],
         model_selection: factors?.model_selection ?? null,
-        passing_score: passingScore
+        passing_score: passingScore,
+        forecast_audit: issuance ? { ...issuance, upcoming: upcomingForecasts } : null
       }, 200)
     }
     if (req.method === "GET" && path === "/foodcourt/ai-loop-runs") {

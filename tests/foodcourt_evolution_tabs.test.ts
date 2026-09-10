@@ -30,10 +30,13 @@ test('records default to twelve rows and can expand to all rows', () => {
   assert.match(page, /直近12件だけ表示/)
 })
 
-test('prediction confidence stars stay inside their KPI card', () => {
-  assert.match(page, /\.overview-secondary \.highlight-trust \.kpi-v\{[^}]*font-size:26px[^}]*white-space:nowrap[^}]*overflow:hidden/)
-  assert.match(page, /stars = '★★★★☆'/)
-  assert.doesNotMatch(page, /⭐⭐⭐⭐☆/)
+test('evaluation distinguishes issued forecasts from retrospective results without demo values', () => {
+  assert.match(page, /本番・事前予測/)
+  assert.match(page, /参考・過去の再計算/)
+  assert.match(page, /評価条件切替・比較不可/)
+  assert.match(page, /prev\.evaluation_version===row\.evaluation_version/)
+  assert.doesNotMatch(page, /最高精度モード|stars =|24\.5<small>|27\.5<small>/)
+  assert.doesNotMatch(page, /<script>\s*document\.getElementById\('authCard'\)\.hidden = true/)
 })
 
 test('page ids remain unique after the layout reorganization', () => {

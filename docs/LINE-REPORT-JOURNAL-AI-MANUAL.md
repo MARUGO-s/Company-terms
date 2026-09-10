@@ -21,7 +21,7 @@
 | JRN Journal Report基本・取込 | 電子ジャーナル取込、保存レポート、店舗情報と確定集計 | JRN-01 Journal Reportの目的と画面<br>JRN-02 ジャーナル取込・保存レポート・原本<br>JRN-03 確定集計・カテゴリ・ランチ／ディナー<br>JRN-04 店舗情報・営業カレンダー・ワインml<br>JRN-05 LINE Report電子ジャーナルとJournal Reportの違い |
 | KNW 資料・#メモ・店舗情報 | 資料タブ、LINE #メモ、施策・メニュー・営業カレンダー | KNW-01 資料タブ・施策・メニュー資料<br>KNW-02 LINE #メモ・M-talkメニュー画像・添付資料登録 |
 | JAI Journal AI分析・チャット | 確定集計、商品・コード・コース、比較、予約、予測、PDF | JAI-01 標準AI分析の根拠と出力<br>JAI-02 AIチャットで質問できる内容<br>JAI-03 商品・銘柄・商品コード・コース分析<br>JAI-04 予約・飛び込み・売上予測・MAPE<br>JAI-05 履歴・ゴミ箱・管理者機能 |
-| FCT フードコート分析・日報・予測 | テナント実績、イベント・天気、日報、複数AI、来客予測と進化 | FCT-01 フードコート分析の全体像とデータ<br>FCT-02 フードコート複数AI・Q&A・サマリー<br>FCT-03 来客予測・MAPE・AI学習進化<br>FCT-04 フードコート日報・日次履歴・週次報告<br>FCT-05 品質評価・RAG・蒸留・プロンプト候補<br>FCT-06 イベント・天気・週次配信・日本戦PVアラート |
+| FCT フードコート分析・日報・予測 | テナント実績、イベント・天気、日報、複数AI、来客予測と進化 | FCT-01 フードコート分析の全体像とデータ<br>FCT-02 フードコート複数AI・Q&A・サマリー<br>FCT-03 来客予測・事前予測の精度評価・AI学習進化<br>FCT-04 フードコート日報・日次履歴・週次報告<br>FCT-05 品質評価・RAG・蒸留・プロンプト候補<br>FCT-06 イベント・天気・週次配信・日本戦PVアラート |
 | REV 口コミ・競合分析 | 自店舗Google口コミ、周辺競合、評価・件数・競合圧力 | REV-01 自店舗Google口コミ<br>REV-02 周辺競合・口コミ・競合圧力 |
 | ADM 管理・利用状況・システム情報 | 管理画面、承認、Webhook、ログ、AI使用量、システムマップ | ADM-01 管理画面・接続設定・承認・ログ<br>ADM-02 AI使用量・システムマップ・利用状況<br>ADM-03 M-talk管理・権限テンプレート・監査復元 |
 | DEV コード構成・API・データ基盤 | 公開画面、Edge Functions、DB・Storage・Realtime、テストとデプロイ | DEV-01 公開画面・フロントエンドの構成<br>DEV-02 Edge Functions・API・Webhookの責務<br>DEV-03 DB・Storage・Realtime・cronの基盤<br>DEV-04 テスト・知識同期・デプロイ<br>DEV-05 補助コード・GAS・OCR・レガシー経路 |
@@ -476,16 +476,18 @@ Gmail自動取込、予約スクショ、予約表、本日の予約
 
 **主な実装根拠:** `supabase/functions/_shared/foodcourt_compare.ts` / `supabase/functions/_shared/foodcourt_loop_utils.ts` / `supabase/functions/_shared/foodcourt_distillation.ts` / `tests/foodcourt_prompt_evaluation.test.ts`
 
-### FCT-03 来客予測・MAPE・AI学習進化
+### FCT-03 来客予測・事前予測の精度評価・AI学習進化
 
-**要点:** 2種類の予測モデル、自動選択、14日予測と進化画面を説明する。
+**要点:** 5方式の予測、改変不可の事前予測台帳、WAPE・MAE比較、14日予測を説明する。
 
-- 来客予測は蓄積実績、曜日、イベント、天気、動員数等を使い、客数と売上の今後14日を作ります。
-- レガシー乗算モデルとポアソン回帰GLM等をバックテストし、拡張窓MAPEが良いモデルを自動採用します。
+- 来客予測は完了日の実績、曜日、イベント、天気を使い、当日から14日先の客数・売上を作ります。事後判明した動員数は予測変数に使いません。
+- 安全補正した乗算・直近4回の同曜日・類似日・正則化回帰・組合せの5方式を同時に予測し、発行日時と入力を上書きできない台帳へ保存します。過去再計算と本番の事前予測は別に評価します。
 - 東京ドーム本体とカナデビア／後楽園等の小ホールは会場規模・イベント種別を分け、小ホールをドーム本体と同じ係数へ固定しません。
 - 毎日の学習処理で係数・予測・精度履歴を更新します。データが増えるほど検証材料は増えますが、必ず精度が上がると断定はしません。
-- AI学習進化ページでは客数・売上MAPE、学習データ量、採用モデル、信頼度、学習曲線、品質基準、自己進化の準備状況を確認します。
-- MAPEは低いほど誤差が小さい指標です。基準を下回っても予測を停止せず、継続学習します。
+- AI学習進化の概要では本番の事前予測と参考再計算を選び、直近14・28・56日、当日朝・1・7・14日前ごとにWAPE・MAE・偏り・区間的中率・同曜日比を比較します。ゼロ実績もWAPE・MAEの誤差へ含め、未入力とは分けます。
+- 新方式への切替は月曜日、朝の時間枠（JST09:00より前）の1日前予測で共通21日以上、客数と売上のMAEがともに5%以上改善し、前後半も改善する場合だけです。複雑な方式は同曜日基準にも勝つ必要があります。採用後28日は再切替を待ちます。
+- 表示する80%予測幅は同じ先行日数の過去誤差による経験的な幅で、80%の的中を保証しません。実績不足時は参考再計算で算出し、その区別を表示します。
+- 旧学習曲線・全記録は参考再計算です。モデルや評価方式の切替を改善・悪化とは判定しません。AI回答の点数スライダーと予測モデルの採用条件は独立しています。
 
 **検索語:** 来客予測 / 予測客数 / 予測売上 / 14日 / mape / 予測誤差 / 学習 / 進化 / モデル選択 / glm / ポアソン / 乗算モデル / 小ホール / イベント係数 / 会場規模 / 同じ係数 / 毎朝5時 / 毎日5時
 
@@ -756,11 +758,11 @@ Gmail自動取込、予約スクショ、予約表、本日の予約
 
 - 公開コード入口: 41件
 - Edge Functions: 20件
-- 共有TypeScriptモジュール: 98件
+- 共有TypeScriptモジュール: 99件
 - 補助・運用・レガシーコード: 40件
 - admin-api静的ルート: 143件
-- SQL migrations: 299件（全件の構文・関係はGraphify/knowledge:checkで監査）
-- テストファイル: 89件
+- SQL migrations: 300件（全件の構文・関係はGraphify/knowledge:checkで監査）
+- テストファイル: 91件
 
 ### 公開画面・ブラウザコード
 
@@ -856,6 +858,7 @@ Gmail自動取込、予約スクショ、予約表、本日の予約
 | `supabase/functions/_shared/foodcourt_attendance.ts` | FCT-01 / FCT-02 / FCT-03 / FCT-04 / FCT-05 / FCT-06 / DEV-02 |
 | `supabase/functions/_shared/foodcourt_compare.ts` | FCT-01 / FCT-02 / FCT-03 / FCT-04 / FCT-05 / FCT-06 / DEV-02 |
 | `supabase/functions/_shared/foodcourt_distillation.ts` | FCT-01 / FCT-02 / FCT-03 / FCT-04 / FCT-05 / FCT-06 / DEV-02 |
+| `supabase/functions/_shared/foodcourt_forecast_engine.ts` | FCT-01 / FCT-02 / FCT-03 / FCT-04 / FCT-05 / FCT-06 / DEV-02 |
 | `supabase/functions/_shared/foodcourt_forecast_utils.ts` | FCT-01 / FCT-02 / FCT-03 / FCT-04 / FCT-05 / FCT-06 / DEV-02 |
 | `supabase/functions/_shared/foodcourt_journal_coverage.ts` | FCT-01 / FCT-02 / FCT-03 / FCT-04 / FCT-05 / FCT-06 / DEV-02 |
 | `supabase/functions/_shared/foodcourt_loop_utils.ts` | FCT-01 / FCT-02 / FCT-03 / FCT-04 / FCT-05 / FCT-06 / DEV-02 |

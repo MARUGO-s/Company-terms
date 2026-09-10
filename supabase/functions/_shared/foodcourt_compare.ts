@@ -2251,14 +2251,15 @@ function buildForecastContext(forecast: ForecastRow[]): string {
   const mg = ape('guests'); const ms = ape('sales')
   const nEval = days.filter(([, o]) => o.guests && o.guests.actual != null).length
   const L: string[] = []
-  L.push(`学習型モデル(${forecast[0].model_version ?? 'v1'})の自己採点: 直近${nEval}日の誤差 客数±${mg != null ? Math.round(mg * 100) : '—'}% / 売上±${ms != null ? Math.round(ms * 100) : '—'}%（データ蓄積で改善）。`)
+  L.push(`予測一覧の参考集計: ${nEval}日、客数MAPE ${mg != null ? Math.round(mg * 100) : '—'}% / 売上MAPE ${ms != null ? Math.round(ms * 100) : '—'}%。旧再計算・異なる発行条件が混在し得るため、これは本番精度や学習による改善の証拠ではない。本番精度はAI学習進化の事前予測台帳で、先行日数・対象日・方式を揃えて比較する。MAPEを予測区間や的中率として扱わない。`)
   const today = jstTodayForFc()
   const fut = days.filter(([d]) => d >= today).slice(0, 10)
   for (const [d, o] of fut) {
     const dw = fcDow(d)
     const g = o.guests ? `客数${Math.round(o.guests.predicted)}人` : ''
     const s = o.sales ? `売上${fcYen(o.sales.predicted)}` : ''
-    L.push(`${d}(${dw != null ? FC_DOW[dw] : '?'}) 予測 ${[g, s].filter(Boolean).join(' / ')}`)
+    const range = o.guests?.predicted_low != null && o.guests?.predicted_high != null ? `（客数の経験的80%幅 ${Math.round(o.guests.predicted_low)}〜${Math.round(o.guests.predicted_high)}人。保証なし）` : '（予測幅は評価データ不足）'
+    L.push(`${d}(${dw != null ? FC_DOW[dw] : '?'}) 予測 ${[g, s].filter(Boolean).join(' / ')} ${range}`)
   }
   return L.join('\n')
 }

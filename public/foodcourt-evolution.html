@@ -301,6 +301,7 @@
     .overview-primary{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:18.4px;}
     .overview-secondary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:13.8px;margin-top:18.4px;}
     .tab-panel .kpi-grid{display:block;margin:0;}
+    .forecast-control{min-height:40px;border:1px solid var(--line-soft);border-radius:5px;padding:8px;color:var(--tx);background:var(--surface);font:inherit;max-width:100%;}
     .overview-primary .kpi,.overview-secondary .kpi{border-radius:4px;padding:18.4px;background:var(--surface);}
     .overview-primary .kpi-v{font-size:38px;font-weight:500;}
     .overview-primary .kpi:first-child .kpi-v{font-size:24px;line-height:1.35;color:var(--good);}
@@ -399,9 +400,9 @@
   <!-- page head -->
   <div class="phead">
     <div class="phead-l">
-      <div class="page-kicker">MULT-FACTOR-V3</div>
+      <div class="page-kicker">FORECAST AUDIT V1</div>
       <h1 class="ptitle">AI学習 進化トラッキング</h1>
-      <div class="psub">来客予測モデル（マルゴS）の誤差（MAPE）が日々の蓄積データとともにどう改善されているか追跡します。毎晩の学習cronが自動記録します。</div>
+      <div class="psub">来客予測（マルゴS）の事前予測と確定実績を比較します。参考再計算とは分けて、方式・先行日数・同じ対象期間ごとに精度を確認します。</div>
     </div>
     <div class="phead-actions">
       <span class="pill" id="authBadge">未接続</span>
@@ -443,15 +444,15 @@
             <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--tx-3);"><span>30</span><span>95</span></div>
             <div style="display:flex;align-items:center;gap:10px;margin-top:18px;padding-top:14px;border-top:1px solid var(--line-soft);">
               <span class="reason-badge reason-passed" id="passingScoreSaveStatus">保存済み</span>
-              <span id="passingVerdict" style="font-size:12px;color:var(--tx-2);">最新スコアを確認中です。</span>
+              <span id="passingVerdict" style="font-size:12px;color:var(--tx-2);">AI回答の評価基準です。数値予測の採用条件とは独立しています。</span>
             </div>
           </div>
         </div>
         <div class="settings-copy">
           <div class="page-kicker">HOW TO READ</div>
           <h2 class="tab-heading">基準の考え方</h2>
-          <p>表示値は総合点・予測スコア・品質合格RAGの基準です。AI回答の各評価軸は、総合点より5点低い値を最低ラインにします。人が承認したRAG学習は基準点にかかわらず保持します。</p>
-          <p>予測スコアは「100 − 直近14日客数MAPE」で算出します。基準を下回っても予測は停止せず、毎日の再学習を続けます。</p>
+          <p>この点数設定はAI回答の総合点・品質合格RAGの基準です。AI回答の各評価軸は、総合点より5点低い値を最低ラインにします。人が承認したRAG学習は基準点にかかわらず保持します。</p>
+          <p>客数・売上の予測精度は点数へ変換せず、概要のWAPE・MAE・偏りで確認します。予測モデルの切替条件は、このスライダーとは独立した事前予測の比較基準です。</p>
         </div>
       </div>
     </section>
@@ -464,8 +465,8 @@
 
     <!-- MAPE learning curve -->
     <section class="tab-panel" id="tabCurve" role="tabpanel" data-panel="curve" hidden>
-      <h2 class="tab-heading">予測誤差（MAPE）の学習曲線</h2>
-      <p class="tab-lead">MAPE（平均絶対誤差率）が低いほど高精度です。データが蓄積されるにつれて下がるのが理想の学習曲線です。</p>
+      <h2 class="tab-heading">参考再計算の誤差履歴（MAPE）</h2>
+      <p class="tab-lead">実際の事前予測の成績は「概要」で確認できます。この履歴にはモデル・評価期間の変更も含まれます。</p>
       <div class="card">
       <div class="chart-wrap">
         <div class="chart-area" id="mapeChartArea">
@@ -479,7 +480,7 @@
           <span><i style="display:inline-block;width:10px;height:10px;transform:rotate(45deg);background:#ffd700"></i>◆ GLMモデル採用日</span>
         </div>
       </div>
-      <div class="card-note">MAPE（平均絶対誤差率）が低いほど予測精度が高い。データが蓄積されるにつれ低下するのが理想の学習曲線。</div>
+      <div class="card-note" id="chartNote">参考再計算の履歴です。</div>
       </div>
     </section>
 
@@ -576,7 +577,7 @@
         <div class="card-t"><span class="em">⚖️</span>モデル選択ログ（ループ①最新）</div>
       </div>
       <div id="modelSelWrap"><div style="color:var(--tx-3);font-size:13px">データなし</div></div>
-      <div class="card-note">毎晩 JST 05:00 の学習cronが「レガシー乗算モデル vs ポアソン回帰GLM」をバックテストで競わせ、MAPEが低い方を採用。λ自動選択はリッジ強度 {1,2,4,8,16} を全バックテストして最良を選ぶ。</div>
+      <div class="card-note">毎朝 JST 05:00 に5方式の予測を記録。新方式への切替は、発行済み予測の客数・売上MAEを同じ対象日で比較して週1回判定します。</div>
     </div>
     </section>
 
@@ -604,7 +605,7 @@
     tokenInput: $('tokenInput'), tokenBtn: $('tokenBtn'),
     resultArea: $('resultArea'), loadMsg: $('loadMsg'),
     reloadBtn:  $('reloadBtn'),
-    kpiGrid: $('kpiGrid'), kpiNote: $('kpiNote'),
+    kpiGrid: $('kpiGrid'), kpiNote: $('kpiNote'), chartNote: $('chartNote'),
     mapeSvg: $('mapeSvg'),
 
     histTbody: $('histTbody'),
@@ -765,6 +766,7 @@
       setAuthBadge(true);
       historyRows = Array.isArray(histBody.rows) ? histBody.rows : [];
       modelSelectionData = histBody.model_selection ?? null;
+      forecastAudit = histBody.forecast_audit ?? null;
       loopRuns = Array.isArray(loopBody.runs) ? loopBody.runs : [];
       ragDocuments = Array.isArray(ragBody.documents) ? ragBody.documents : [];
       ragCount = Number(ragBody.count || ragDocuments.length || 0);
@@ -810,7 +812,7 @@
     if(v==null) return null;
     const n = Number(v);
     if(!Number.isFinite(n)) return null;
-    return Math.abs(n) <= 1.5 ? n * 100 : n;
+    return n * 100; // API ratios are always fractions, including errors above 150%.
   };
   const escH = s => String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   function fmtDate(ymd){ if(!ymd) return '—'; const m=String(ymd).match(/(\d{4})-(\d{2})-(\d{2})/); return m ? m[1]+'/'+m[2]+'/'+m[3] : ymd; }
@@ -833,6 +835,10 @@
   let evolutionReadiness = null;
   let promptEvaluation = null;
   let modelSelectionData = null;
+  let forecastAudit = null;
+  let auditHorizon = 1;
+  let auditWindow = 28;
+  let auditKind = 'prospective';
 
   async function loadData(){
     dom.loadMsg.textContent = '読み込み中…'; dom.loadMsg.className='msg';
@@ -941,155 +947,64 @@
   // 読み込み完了時などに実行するため、初期化呼び出しを loadData と domContentLoaded 付近に追加。
   initPassingScoreConfig();
 
+  const forecastModelNames = {
+    'mult-factor-v4-safe': '乗算モデル（安全補正）', 'weekday-4-v1': '直近4回の同曜日',
+    'similar-days-v1': '天候・イベントの類似日', 'ridge-direct-v1': '正則化回帰', 'ensemble-v1': '組合せ予測'
+  };
+  const auditPercent = value => value == null || !Number.isFinite(Number(value)) ? '—' : (Number(value)*100).toFixed(1)+'%';
+  const auditNumber = (value, unit) => value == null || !Number.isFinite(Number(value)) ? '—' : nf.format(Math.round(Number(value)))+unit;
   function renderKpi(){
-    const rows = historyRows;
-    if(!rows.length){ dom.kpiGrid.innerHTML='<div style="color:var(--tx-3);font-size:13px">まだ記録がありません。学習cronが初回実行されると自動的に記録が始まります。</div>'; return; }
-    const latest = rows[rows.length-1];
-    const first  = rows[0];
-    const latestG = mapePct(latest.rolling_mape_guests!=null ? latest.rolling_mape_guests : latest.mape_guests);
-    const latestS = mapePct(latest.rolling_mape_sales!=null ? latest.rolling_mape_sales : latest.mape_sales);
-    const firstG  = mapePct(first.mape_guests);
-    const firstS  = mapePct(first.mape_sales);
-    const deltaG  = (latestG!=null && firstG!=null) ? latestG - firstG : null;
-    const trackingDays = rows.length;
-    const histDays = latest.history_days || 0;
-    const meanG = latest.mean_guests!=null ? Math.round(Number(latest.mean_guests)) : null;
-
-    // スコア計算 (100 - 客数MAPE)
-    const latestScore = latestG != null ? Math.max(0, Math.round(100 - latestG)) : null;
-    const firstScore = firstG != null ? Math.max(0, Math.round(100 - firstG)) : null;
-
-    // AI評価基準判定
-    let passStatusBadge = '判定不可';
-    let passStatusSub = 'データが足りません';
-    let isPassed = false;
-
-    if (latestScore != null) {
-      isPassed = latestScore >= passingScore;
-      if (isPassed) {
-        passStatusBadge = '精度基準を達成';
-        passStatusSub = `予測スコア ${latestScore}点（基準点 ${passingScore}点以上）`;
-      } else {
-        passStatusBadge = '精度基準未達';
-        passStatusSub = `予測スコア ${latestScore}点（基準点 ${passingScore}点以上・継続学習中）`;
-      }
+    const audit = forecastAudit;
+    if(!audit){
+      dom.kpiGrid.innerHTML = '<div class="card"><div class="card-t">事前予測の記録を準備中</div><p>過去の学習履歴は参考再計算です。本番の予測精度は、発行済み予測と確定実績が揃ってから評価します。</p></div>';
+      dom.chartNote.textContent = '参考再計算の履歴です。モデル・評価方法の切替をまたいだ線は結びません。日ごとに評価対象が変わるため、上下は学習効果の証明ではありません。';
+      return;
     }
-
-    // ゲーミフィケーション用: AIレベル判定 (学習データ日数に基づく)
-    let aiLevel = 1;
-    let aiLevelName = 'ひよこAI';
-    let aiLevelEmoji = '🐣';
-    let aiLevelSub = 'データ収集中（目安14日）';
-    if (histDays >= 60) {
-      aiLevel = 4;
-      aiLevelName = '大賢者AI';
-      aiLevelEmoji = '🧙‍♂️';
-      aiLevelSub = '最高精度モード（データ60日超）';
-    } else if (histDays >= 30) {
-      aiLevel = 3;
-      aiLevelName = '一人前AI';
-      aiLevelEmoji = '🤖';
-      aiLevelSub = '実用的な精度（データ30日超）';
-    } else if (histDays >= 14) {
-      aiLevel = 2;
-      aiLevelName = '見習いAI';
-      aiLevelEmoji = '🎓';
-      aiLevelSub = '傾向が出始めています（データ14日超）';
-    }
-
-    // ゲーミフィケーション用: 信頼度星マーク判定 (最新客数MAPEに基づく)
-    let stars = '判定中';
-    let starsSub = '十分なデータが必要です';
-    if (latestG != null) {
-      if (latestG < 15) {
-        stars = '★★★★★';
-        starsSub = '超高精度（誤差15%未満）';
-      } else if (latestG < 25) {
-        stars = '★★★★☆';
-        starsSub = '高精度（誤差25%未満）';
-      } else if (latestG < 40) {
-        stars = '★★★☆☆';
-        starsSub = '標準精度（誤差40%未満）';
-      } else if (latestG < 55) {
-        stars = '★★☆☆☆';
-        starsSub = '参考程度（誤差55%未満）';
-      } else {
-        stars = '★☆☆☆☆';
-        starsSub = '誤差大きめ';
-      }
-    }
-
-    // learning rate: simple linear regression slope (mape_guests vs index)
-    let slope = null;
-    if(rows.length >= 3){
-      const ys = rows.map(r => mapePct(r.mape_guests)).filter(v=>v!=null);
-      if(ys.length >= 3){
-        const n = ys.length;
-        const xm = (n-1)/2;
-        const ym = ys.reduce((s,v)=>s+v,0)/n;
-        let sxy=0, sxx=0;
-        ys.forEach((y,i)=>{ sxy+=(i-xm)*(y-ym); sxx+=(i-xm)*(i-xm); });
-        slope = sxx>0 ? sxy/sxx : null;
-      }
-    }
-
-    const deltaClass = (d) => d==null ? 'neutral' : d<0 ? 'good' : d>0 ? 'bad' : 'neutral';
-    const deltaLabel = (d, unit) => d==null ? '—' : (d<0?'▼ ':d>0?'▲ ':'')+Math.abs(Math.round(d*10)/10).toFixed(1)+(unit||'pt');
-
+    const evaluation = audit.evaluation || {};
+    const window = evaluation[auditKind]?.windows?.find(w=>w.days===auditWindow);
+    const models = window?.horizons?.find(h=>h.horizon===auditHorizon)?.models || [];
+    const active = models.find(m=>m.model===audit.chosen_model);
+    const isIssued = auditKind==='prospective';
+    const status = isIssued && (active?.guests?.n||0) >=21 ? '事前予測を実績で評価' : isIssued ? '事前予測の実績を蓄積中' : '参考再計算（採用判定には使いません）';
+    const card = (title,value,sub) => `<div class="kpi"><div class="kpi-k">${escH(title)}</div><div class="kpi-v">${escH(value)}</div><div class="kpi-sub">${escH(sub)}</div></div>`;
     dom.kpiGrid.innerHTML = `
-      <div class="overview-primary">
-        <div class="kpi ${latestScore != null ? (isPassed ? 'highlight-good' : 'highlight-bad') : ''}">
-          <div class="kpi-k">AIモデル合否判定</div>
-          <div class="kpi-v">${escH(passStatusBadge)}</div>
-          <div class="kpi-sub">${escH(passStatusSub)}</div>
+      <div class="card" style="margin-bottom:16px"><div class="card-t">${escH(status)}</div>
+        <p style="color:var(--tx-3);font-size:13px">発行: ${escH(fmtDatetime(audit.issued_at))} ／ 学習実績: ${escH(fmtDate(audit.train_through))}まで<br>採用: ${escH(forecastModelNames[audit.chosen_model]||audit.chosen_model)}</p>
+        ${audit.evaluation_eligible===false?'<p style="font-size:12px;color:var(--warn)">今回は朝の評価時間枠外に発行した参考予測です。本番精度の比較には混ぜません。</p>':''}
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <label>評価 <select class="forecast-control" id="forecastAuditKind"><option value="prospective">本番・事前予測</option><option value="retrospective">参考・過去の再計算</option></select></label>
+          <label>対象期間 <select class="forecast-control" id="forecastAuditWindow"><option value="14">直近14日</option><option value="28">直近28日（主評価）</option><option value="56">直近56日</option></select></label>
+          <label>先行日数 <select class="forecast-control" id="forecastAuditHorizon"><option value="0">当日朝</option><option value="1">1日前</option><option value="7">7日前</option><option value="14">14日前</option></select></label>
         </div>
-        <div class="kpi">
-          <div class="kpi-k">初回評価スコア</div>
-          <div class="kpi-v">${firstScore != null ? firstScore : '—'}<small>点</small></div>
-          <div class="kpi-sub">初回客数MAPE: ${firstG != null ? firstG.toFixed(1)+'%' : '—'}</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-k">最新評価スコア</div>
-          <div class="kpi-v">${latestScore != null ? latestScore : '—'}<small>点</small></div>
-          <div class="kpi-sub ${latestScore != null && firstScore != null && latestScore >= firstScore ? 'good' : ''}">初回比: ${latestScore != null && firstScore != null ? (latestScore >= firstScore ? '+' : '') + (latestScore - firstScore) : '—'}点</div>
-        </div>
+        <p style="font-size:12px;color:var(--tx-3)">評価対象: ${escH(fmtDate(window?.from))}〜${escH(fmtDate(window?.through))}。空欄は未評価であり、誤差ゼロではありません。</p>
+        ${!isIssued ? '<p style="color:var(--warn)">天候・イベントは現在の更新済みデータです。当時の事前予測精度とは異なります。</p>' : ''}
       </div>
       <div class="overview-secondary">
-        <div class="kpi">
-          <div class="kpi-k">客数 MAPE（最新）</div>
-          <div class="kpi-v">${latestG!=null ? latestG.toFixed(1) : '—'}<small>%</small></div>
-          <div class="kpi-delta ${deltaClass(deltaG)}">${deltaLabel(deltaG)} 初回比</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-k">売上 MAPE（最新）</div>
-          <div class="kpi-v">${latestS!=null ? latestS.toFixed(1) : '—'}<small>%</small></div>
-          <div class="kpi-sub">初回: ${firstS!=null ? firstS.toFixed(1)+'%' : '—'}</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-k">学習データ量</div>
-          <div class="kpi-v">${histDays}<small>日分</small></div>
-          <div class="kpi-sub">バックテスト ${latest.backtest_days||0} 日</div>
-        </div>
-        <div class="kpi highlight-level">
-          <div class="kpi-k">AI学習レベル</div>
-          <div class="kpi-v">Lv.${aiLevel}</div>
-          <div class="kpi-sub">${escH(aiLevelName)}／${escH(aiLevelSub)}</div>
-        </div>
-        <div class="kpi highlight-trust">
-          <div class="kpi-k">予測の信頼度</div>
-          <div class="kpi-v" style="color:var(--base-tx);letter-spacing:1px">${stars}</div>
-          <div class="kpi-sub">${escH(starsSub)}</div>
-        </div>
-      </div>`;
-
-    if(dom.passingVerdict){
-      dom.passingVerdict.textContent = latestScore == null
-        ? '最新スコアを確認できません。'
-        : `最新スコア ${latestScore}点 — 現在の基準を${latestScore >= passingScore ? '満たしています' : '下回っています'}。`;
-    }
-
-    const noteDate = fmtDate(latest.log_date);
-    dom.kpiNote.textContent = `最終記録: ${noteDate}（モデル: ${latest.model_version||'—'}）。MAPEは毎晩の学習cronが自動計算します。改善が見られない場合は、学習データにバラつきの多い日が多いことを意味します。`;
+        ${card('客数 WAPE',auditPercent(active?.guests?.wape),auditNumber(active?.guests?.n,'日を評価'))}
+        ${card('売上 WAPE',auditPercent(active?.sales?.wape),auditNumber(active?.sales?.n,'日を評価'))}
+        ${card('客数の平均ズレ（MAE）',auditNumber(active?.guests?.mae,'人'),'少ないほど正確')}
+        ${card('売上の平均ズレ（MAE）',auditNumber(active?.sales?.mae,'円'),'少ないほど正確')}
+        ${card('売上の偏り',auditPercent(active?.sales?.bias),'プラス＝過大予測、マイナス＝過小予測')}
+      </div>
+      <div class="card"><div class="card-t">5方式の比較</div>
+        <div style="overflow-x:auto;margin-top:12px"><table class="tbl" style="min-width:720px;width:100%"><thead><tr><th class="l">方式</th><th>日数</th><th>客数WAPE</th><th>売上WAPE</th><th>売上MAE</th><th>同曜日比の改善</th><th>売上区間的中率</th></tr></thead><tbody>
+        ${models.map(m=>`<tr><td class="l">${escH(forecastModelNames[m.model]||m.model)}${m.model===audit.chosen_model?'（採用）':'（比較）'}</td><td>${escH(String(m.sales?.n||0))}</td><td>${auditPercent(m.guests?.wape)}</td><td>${auditPercent(m.sales?.wape)}</td><td>${auditNumber(m.sales?.mae,'円')}</td><td>${auditPercent(m.baseline_skill_sales)}</td><td>${auditPercent(m.sales?.coverage)} / ${m.sales?.interval_n||0}日</td></tr>`).join('')}
+        </tbody></table></div>
+        <p style="font-size:12px;color:var(--tx-3)">同曜日比は同じ対象日の売上MAE比較（プラス＝改善）。区間は経験的80%予測幅で、的中率を保証しません。再計算には区間の実績評価を付けません。</p>
+        <div style="display:flex;gap:16px;flex-wrap:wrap">${(active?.slices||[]).map(slice=>`<div style="font-size:12px">${escH(({rain:'雨天',dry:'雨なし',unknown_weather:'天候不明',event:'イベントあり',no_event:'イベントなし'})[slice.label]||slice.label)}: 売上WAPE ${auditPercent(slice.sales?.wape)}（${slice.sales?.n||0}日）</div>`).join('')}</div>
+      </div>
+      <div class="card"><div class="card-t">発行済みの客数・売上予測（当日〜14日先）</div>
+        <div style="overflow-x:auto;margin-top:12px"><table class="tbl" style="min-width:660px"><thead><tr><th class="l">対象日</th><th>客数</th><th>客数の80%幅</th><th>売上</th><th>入力状態</th></tr></thead><tbody>
+        ${(audit.upcoming||[]).map(p=>`<tr><td class="l">${escH(fmtDate(p.target_date))}</td><td>${auditNumber(p.guests,'人')}</td><td>${p.guests_low!=null&&p.guests_high!=null?auditNumber(p.guests_low,'')+'〜'+auditNumber(p.guests_high,'人'):'評価データ不足'}</td><td>${auditNumber(p.sales,'円')}</td><td>${p.input_snapshot?.featureMissing?'イベント・天候未確認':p.input_snapshot?.weatherKnown===false?'天候不明':'取得済み'}</td></tr>`).join('')}
+        </tbody></table></div><p style="font-size:12px;color:var(--tx-3)">区間は同じ先行日数の過去誤差から算出。事前予測の実績が20日未満の間は、更新済み天候を使う再計算に基づく参考幅です。入力不明や急な休業・悪天候では広い幅でも外れる可能性があります。</p>
+      </div>
+      <div class="card-note">新方式の採用は月曜日に判定します。朝の時間枠（JST 09:00より前、通常05:00）の1日前予測で共通21日以上、客数と売上の平均誤差がともに5%以上改善し、前後半でも改善する場合が対象です。採用後28日は再切替を待ちます。統計的有意差を保証する基準ではありません。<br>
+      データ点検: 不正・未入力 ${Number(audit.data_quality?.excluded_invalid_days||0)}日除外 ／ 天候不明 ${Number(audit.data_quality?.unknown_weather_days||0)}日 ／ ゼロ実績 ${Number(audit.data_quality?.zero_actual_days||0)}日を保持。未入力を休業・ゼロとは判断しません。</div>`;
+    const bind = (id,value,fn) => {const el=document.getElementById(id);el.value=String(value);el.addEventListener('change',()=>{fn(el.value);renderKpi();});};
+    bind('forecastAuditKind',auditKind,v=>auditKind=v);
+    bind('forecastAuditWindow',auditWindow,v=>auditWindow=Number(v));
+    bind('forecastAuditHorizon',auditHorizon,v=>auditHorizon=Number(v));
+    dom.chartNote.textContent = '参考再計算の履歴です。モデル・評価方法の切替をまたいだ線は結びません。日ごとの対象変化も含むため、上下をそのまま学習効果とは判断できません。';
   }
 
   // ===== MAPE line chart (inline SVG) =====
@@ -1174,7 +1089,11 @@
     function makePath(vals, color, isDashed, isGuestPath){
       const pts = vals.map((v,i)=>v!=null?[xOf(i),yOf(v),i]:null).filter(p=>p);
       if(pts.length<2) return;
-      const d = pts.map((p,i)=>(i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+      const d = pts.map((p,i)=>{
+        const prev=i>0?rows[pts[i-1][2]]:null, row=rows[p[2]];
+        const continuous=prev && pts[i-1][2]===p[2]-1 && prev.model_version===row.model_version && prev.evaluation_version===row.evaluation_version;
+        return (continuous?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1);
+      }).join(' ');
       const path = document.createElementNS('http://www.w3.org/2000/svg','path');
       path.setAttribute('d',d); path.setAttribute('fill','none');
       path.setAttribute('stroke',color); path.setAttribute('stroke-width','2.5'); path.setAttribute('stroke-linecap','round'); path.setAttribute('stroke-linejoin','round');
@@ -1253,7 +1172,7 @@
   function renderTable(){
     const allRows = [...historyRows].reverse();
     const rows = showAllHistory ? allRows : allRows.slice(0,12);
-    dom.historyCount.textContent = `全 ${nf.format(allRows.length)} 件 — 毎晩の学習cronによる自動記録`;
+    dom.historyCount.textContent = `全 ${nf.format(allRows.length)} 件 — 参考再計算の記録（旧方式は全履歴、新方式は最大56日・1日前予測）`;
     dom.historyToggleBtn.textContent = showAllHistory ? '直近12件だけ表示' : `全 ${nf.format(allRows.length)} 件を表示`;
     dom.historyToggleBtn.disabled = allRows.length <= 12;
     if(!allRows.length){ dom.histTbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--tx-3)">記録なし</td></tr>'; return; }
@@ -1266,7 +1185,9 @@
       // delta vs previous row (previous = next in reversed array)
       const prev = allRows[idx+1];
       let deltaHtml = '<span class="neg">—</span>';
-      if(prev && prev.mape_guests!=null && mg!=null){
+      if(prev && (prev.model_version !== r.model_version || prev.evaluation_version !== r.evaluation_version)) {
+        deltaHtml = '<span class="neutral">評価条件切替・比較不可</span>';
+      } else if(prev && prev.mape_guests!=null && mg!=null){
         const prevMg = mapePct(prev.mape_guests);
         const d = prevMg!=null ? mg - prevMg : null;
         if(d == null) deltaHtml = '<span class="neg">—</span>';
@@ -1628,26 +1549,9 @@
     if(!ms){ card.style.display='none'; return; }
     card.style.display='';
 
-    const winner = String(ms.winner||'').includes('glm') ? 'glm' : 'legacy';
-    const mapeL = ms.mape_legacy!=null ? (Number(ms.mape_legacy)*100).toFixed(1)+'%' : '—';
-    const mapeG = ms.mape_glm!=null   ? (Number(ms.mape_glm)*100).toFixed(1)+'%'    : '—';
-    const lambda = ms.best_lambda!=null ? ms.best_lambda : '—';
-
-    wrap.innerHTML = `
-      <div class="model-sel-card">
-        <div class="model-sel-row">
-          <span style="font-weight:700">採用モデル:</span>
-          <span class="winner-badge ${winner==='glm'?'winner-glm':'winner-legacy'}">${winner==='glm'?'🔬 GLM (ポアソン回帰)':'📊 レガシー乗算モデル'}</span>
-        </div>
-        <div style="display:flex;gap:18px;margin-top:12px;flex-wrap:wrap;font-size:13px">
-          <div><span style="color:var(--tx-3)">レガシー MAPE:</span> <b class="${winner==='legacy'?'good':''}">${escH(mapeL)}</b></div>
-          <div><span style="color:var(--tx-3)">GLM MAPE:</span> <b class="${winner==='glm'?'good':''}">${escH(mapeG)}</b></div>
-          <div><span style="color:var(--tx-3)">採用 λ (リッジ):</span> <b>${escH(String(lambda))}</b></div>
-          ${ms.backtest_days!=null?`<div><span style="color:var(--tx-3)">バックテスト:</span> <b>${ms.backtest_days}日</b></div>`:''}
-        </div>
-        ${ms.note?`<div style="margin-top:10px;font-size:12px;color:var(--tx-3)">${escH(ms.note)}</div>`:''}
-      </div>
-      <div class="card-note" style="margin-top:10px">毎晩のcronが更新。GLMは動員数入力が増えると精度が上がりレガシーを逆転する見込み。</div>`;
+    wrap.innerHTML = '<div class="model-sel-row"><strong>採用モデル:</strong> '+escH(ms.chosen||'未記録')+'</div>'
+      +'<p>選択基準: '+escH(ms.selection_metric||'旧方式')+'</p>'
+      +'<p>判定理由: '+escH(({collecting_issued_forecasts:'事前予測の実績を蓄積中',weekly_review_monday:'次の月曜日に比較',promotion_cooldown_28_days:'切替後28日の確認期間',no_consistent_improvement:'安定した改善を確認できず現行を維持',paired_prospective_improvement:'同じ対象日の事前予測で改善を確認'})[ms.reason]||'旧方式の記録')+'</p>';
   }
 
   // ===== init =====
@@ -1671,11 +1575,6 @@
 
   init();
 })();
-</script>
-<script>
-  document.getElementById('authCard').hidden = true;
-  document.getElementById('resultArea').hidden = false;
-  document.getElementById('kpiGrid').innerHTML = '<div class="overview-secondary"><div class="kpi"><div class="kpi-k">客数 MAPE（最新）</div><div class="kpi-v">24.5<small>%</small></div></div><div class="kpi"><div class="kpi-k">売上 MAPE（最新）</div><div class="kpi-v">27.5<small>%</small></div></div><div class="kpi"><div class="kpi-k">学習データ量</div><div class="kpi-v">77<small>日分</small></div></div><div class="kpi highlight-level"><div class="kpi-k">AI学習レベル</div><div class="kpi-v">Lv.4</div></div><div class="kpi highlight-trust"><div class="kpi-k">予測の信頼度</div><div class="kpi-v" style="color:var(--base-tx);letter-spacing:1px">★★★★☆</div><div class="kpi-sub">高精度（誤差25%未満）</div></div></div>';
 </script>
 </body>
 </html>
