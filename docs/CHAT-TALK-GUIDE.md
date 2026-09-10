@@ -1,44 +1,27 @@
 # トーク（chat.html）ガイド
 
-社内連絡用のグループチャット。`public/chat.html`は画面構造だけを持ち、
-`public/chat/`のCSS・責務別JavaScriptとSupabase Auth / Realtime / Storage /
-Edge Functionを組み合わせて動くM-talkの1画面SPA。
+社内連絡用のグループチャット。`public/chat.html`（1ファイル・約9,900行、UI/CSS/ロジックを全て内包）が
+Supabase Auth / Realtime / Storage / Edge Function と組んで動く、M-talkの1画面SPA。
 
 - 本番: `https://marugo-s.github.io/line_report/chat.html`
 - Supabase プロジェクト: `hocbnifuactbvmyjraxy`
-- 管理画面: `chat-admin.html`（本部管理者、または本部から範囲・操作を付与された
-  M-talk委任管理者専用）。詳細は
+- 管理画面: `chat-admin.html`（本部フル管理セッション専用）。詳細は
   [CHAT-ADMIN-PERMISSIONS.md](./CHAT-ADMIN-PERMISSIONS.md)。
 - ここに endpoint、暗号鍵、VAPID 秘密鍵、メッセージ本文、顧客名を書かない。
 
-この文書はM-talkが実際に持つ機能を、画面構成から1件ずつのメッセージ操作まで
-網羅した参照資料。関数名は2026-08-27時点のコードに基づく。
+この文書は `chat.html` が実際に持つ機能を、画面構成から1件ずつのメッセージ操作まで
+網羅した参照資料。行番号や関数名は 2026-08-26 時点のコードに基づく。
 
 ---
 
 ## 0. 全体構成
 
 ```
-public/
-├─ chat.html                 … 画面構造と公開資産の読込順
-├─ chat-sw.js                … PWAキャッシュ・Web Push
-└─ chat/
-   ├─ chat.css               … 全CSSとレスポンシブ指定
-   ├─ core.js                … Supabase接続、共有状態、共通UI基盤
-   ├─ auth.js                … ログイン・登録
-   ├─ permissions.js         … 全体権限・ルーム権限の画面側ゲート
-   ├─ profile.js             … 初期プロフィール・所属店舗
-   ├─ realtime.js            … Realtime購読と受信反映
-   ├─ notifications.js       … PWA・Web Push・未読バッジ
-   ├─ rooms.js               … 一覧・招待・ルーム操作
-   ├─ messages.js            … 履歴・描画・返信・リアクション
-   ├─ attachments.js         … スタンプ・画像・一般ファイル・カード
-   ├─ composer.js            … 送信・Keep・アルバム・予約配信
-   └─ bootstrap.js           … DOMイベント登録と初期起動
+public/chat.html
+├─ <style>            … 全CSS（テーマは1色固定、ダーク基調のUI）
+├─ <body>             … サイドバー / メイン画面 / 各種オーバーレイの静的マークアップ
+└─ <script>           … 状態管理・Supabaseクエリ・DOM描画（約6,800行、関数400個超）
 ```
-
-スクリプトは上記順のclassic scriptとして読み込む。共有状態を維持したまま責務を分けているため、
-読込順を変更するときは依存関係とPWAの`CHAT_SHELL`を同時に更新する。
 
 画面は3カラム構成。
 
@@ -60,19 +43,12 @@ CSSカスタムプロパティ `--chat-viewport-height` 等は `syncChatViewport
 - メール＋パスワードでログイン（`login()`）。8文字以上のパスワードでセルフ登録（`signup()`）。
 - ログイン失敗時のエラーメッセージは「メールアドレスまたはパスワードが違います」
   「メールアドレスの確認が完了していません」など、Supabaseのエラー文字列を判定して日本語化する。
-- 「この端末にメールアドレスだけ保存する」チェックでは`localStorage`（キー
-  `chat_saved_credentials`）へメールだけを保存する。パスワードは保存しない。
-  旧版が保存した`password`項目を見つけた場合は、起動時にメールだけへ即時移行する。
+- 「この端末にメールとパスワードを保存する」チェックで `localStorage`（キー
+  `chat_saved_credentials`）へ**平文**保存し、次回訪問時に自動入力する
+  （`applySavedCredentials()`）。共用端末では使わせないこと。
 - 初回のみ `#profileForm` で表示名とアイコンを決める（`createProfile()`）。
   `chat_users` への insert が許可リスト外だと「このアカウントはチャットの利用を
   許可されていません」で弾かれる。
-- プロフィール作成後、`chat_user_access.signup_status` は `pending`、
-  `access_enabled` は false。所属店舗は必須（複数可）。許可／不許可カードは
-  本部が`can_review_access`を明示付与した承認者専用の「管理者通知」ルームへ届き、
-  通常ルームの管理者、予約通知の1対1、店舗ルームの一般メンバーには見えない。
-  許可されると閲覧のみで、申請した所属店舗が反映される。
-  所属の後からの変更も管理者許可後に `chat_user_stores` へ書き込む。
-  新しい1対1は所属店舗が重なる相手だけ（既存の1対1はそのまま）。
 
 ### 利用可否ゲート（`chat_user_access`）
 
@@ -89,10 +65,8 @@ CSSカスタムプロパティ `--chat-viewport-height` 等は `syncChatViewport
 管理画面から状態を変えられた場合も即座に反映される。
 
 `chat_user_access` は個別権限も持つ（`can_start_direct` / `can_create_group` /
-`can_browse_users` / `can_review_access` / `can_use_journal_ai`）。前3つは「友だち」
-「登録ユーザー」「Bot」タブの表示、FABの
+`can_browse_users`）。これらは「友だち」「登録ユーザー」「Bot」タブの表示、FABの
 表示、1対1開始ボタンの活性・非活性などUI全体に反映される（`syncGlobalCapabilityUi()`）。
-後2つは本部限定の明示権限で、通常ルームの`can_manage`や委任管理者権限からは付かない。
 
 ---
 
@@ -120,9 +94,9 @@ CSSカスタムプロパティ `--chat-viewport-height` 等は `syncChatViewport
 `すべて` / `友だち` / `グループ` / `登録ユーザー` / `Bot` / `ゴミ箱` の6つ（`setTalkTab()`）。
 `登録ユーザー`と`Bot`は `can_browse_users` が無ければ非表示。
 
-- **すべて**: 自分が参加しているルーム＋「未参加のグループ」（招待リンクを知らなくても
-  一覧には出る非DM・非店舗ルーム）。ボタンは「招待で参加」。リンクを貼ると
-  `chat_join_by_invite` で入る。グループID指定の無断参加はしない。
+- **すべて**: 自分が参加しているルーム＋「参加できるグループ」（招待リンクを知らなくても
+  一覧には出る非DM・非店舗ルーム。ボタンは「参加」だが実際は
+  「メンバーから届いた招待リンクを使ってください」と案内するのみ＝一覧からの直接参加は不可）。
 - **友だち**: 自分がDMを持っている相手、および「登録ユーザーから友だちにする」の
   候補一覧（未DMの人間ユーザー）。
 - **グループ**: DMでも店舗固定ルームでもない複数人ルーム。
@@ -292,7 +266,7 @@ PCではポインタの右クリック（`contextmenu`）で同じ操作をメ�
 ### 操作メニュー（「…」ボタン、`openMessageMenu()`）
 
 - 上段: リアクション15種を5列×3段で表示（送信権限がある場合のみ）。
-- 下段: 返信・コピー・**Keepに保存**・転送・（自分のテキストのみ）編集・（自分の発言のみ）削除。
+- 下段: 返信・コピー・**Keepに保存**・転送・（自分の発言のみ）削除。
 - 背景は60%透明＋ぼかしで、下の吹き出しが透けて見える。
 
 ### リアクション
@@ -316,13 +290,8 @@ PCではポインタの右クリック（`contextmenu`）で同じ操作をメ�
 - **コピー**: 画像は`[画像]`、ファイルは`[ファイル] 名前`、それ以外は本文をクリップボードへ。
 - **転送**: 転送先ユーザーを選ぶと1対1トークを開始/流用し、スタンプ・画像・テキストを
   種別に応じて作り直して挿入する（画像は署名URLを取得→再アップロードで新規パスを発行）。
-- **編集**: 自分の`text`、および文章付き（compact）スタンプのみ。入力欄が編集モードになり、
-  「保存」で`content`と`mentions`を更新する。直す前の本文は`edit_history`へサーバが積み、
-  吹き出しでは取り消し線で残す（クライアントから履歴削除不可）。`edited_at`と
-  「編集済み」も付ける。kind・payload・送信者・返信先・サイレントはDBトリガが固定する。
-  Pushも資料登録もINSERT専用のため再送されない。画像・ファイル・カード・大きく送った
-  スタンプは対象外。
-- **削除**: 自分の発言のみ。Realtimeで他参加者の画面からも消える。
+- **削除**: 自分の発言のみ。Realtimeで他参加者の画面からも消える。編集機能は無い
+  （誤送信の訂正は削除のみ）。
 - **Keepに保存**: 本文（または`[画像]`）をKeepメモへコピーする1クリック操作
   （§11のKeepメモ本体とは別入口）。
 
@@ -409,9 +378,8 @@ iPhoneの「高効率」設定で出る`.heic`は、送信時にJPEGへ変換し
 `pos-journal.html` へ誘導する（`promptJournalArchive()`。原本の二重管理を避けるため、
 汎用の添付として置きっぱなしにはしない）。
 
-> 2026-08-28時点、Bistro CAVACAVAの店舗コード1015・1020に対応済み。
-> 1020は2025年分の既存POS原本で使われていた旧コード。別店舗の登録は、実際のLZHファイル名を確認して
-> `pos_journal_store_codes`へinsertする（推測で登録しない）。
+> ⚠️ 2026-08-25時点、この取込が使えるのは Bistro CAVACAVA（店舗コード1015）のみ。
+> 他店舗の登録は `pos_journal_store_codes` へのinsertだけで完了し、デプロイ不要。
 
 ---
 
@@ -518,7 +486,6 @@ M-talkの画面のまま。
    （`is_direct`ではなく実際の人数で判定。利用者が自分でBotを招待して作った
    2人部屋も対象になる）。
 2. `groupMembers`に`store_key`を持つ店舗Botがいる（取込先の店舗が一意に決まる）。
-3. 本人の`chat_user_access.can_use_journal_ai`がtrueで、M-talk全体の利用も有効。
 
 満たさない場合はボタン自体が出ないか、押しても理由付きのアラートで案内する。
 
@@ -536,13 +503,7 @@ chat.html → mtalk_journal_ai.html?group_id=<id>
   → iframe: jnl2txt.html?mtalk_embed=1&lt=…&mtalk_group_id=…
 ```
 
-発行されるのは**店舗・ルーム・本人・電子ジャーナルAI用途に固定した**ワンタイムリンク（5分）。
-専用交換endpointだけが受理し、交換後は30分セッションになる。各API呼び出しで
-M-talk利用状態、期限付き制限、ルーム参加、閲覧権限、電子ジャーナルAI権限、
-対象店舗への現在承認済み所属、ルーム内店舗Botと固定店舗の一致を再確認する。
-所属取消、Bot退出・差替え、店舗不一致は既存セッションを含め次のAPIで拒否する。
-参照できるのは保存済み売上・商品検索・商品比較だけで、予約者情報、資料、店舗設定、
-PDF履歴、原本取込、削除・更新等の管理APIには到達できない。
+発行されるのは**その店舗にスコープを固定した**ワンタイムリンク（5分）。
 `?mtalk_embed=1`ではAIチャットパネル以外を隠し全面表示にする（CSSと起動条件のみで、
 AIロジックには一切触れない）。回答に「💬 M-talkに貼る」が出るのは`mtalk_group_id`
 付きアクセス時のみで、押すとMarkdownを読みやすいプレーンテキストへ整形してから
@@ -603,11 +564,8 @@ AIロジックには一切触れない）。回答に「💬 M-talkに貼る」�
   保存し、どちらも同じプリセットピッカー（`openPresetIconPicker()`）を共用する。
 - グループアイコンの変更は`can_manage`が必要。DMのアイコンは変更不可（相手のアイコンが
   自動的に表示される）。
-- アカウントメニュー（レール／サイドバー上部のアバターをクリック）から、プロフィール設定・
-  アイコン変更・使い方・ログアウトを行う。
-- 有効な`is_full_admin=true`の全権管理者だけは、同じメニューに「M-talk権限管理」への
-  リンクが表示される。通常ルームの`can_manage`や申請承認権限だけでは表示しない。
-  遷移先の`chat-admin.html`は別途、保存済み管理セッションまたは本部管理資格を検証する。
+- アカウントメニュー（レール／サイドバー上部のアバターをクリック）から、アイコン変更・
+  M-talk管理画面（`chat-admin.html`）・ログアウトを行う。
 
 ---
 
@@ -621,7 +579,6 @@ AIロジックには一切触れない）。回答に「💬 M-talkに貼る」�
 - Bot参加ルームには一覧で青い`BOT`バッジが付く（通常ユーザーだけのルームには出さない）。
 - 店舗Botは通常のM-talk画面から退出・削除できない。削除・復元は`chat-admin.html`だけで
   行い、物理削除せず`bot_deleted_at`を設定する（過去メッセージ・所属履歴は保持）。
-  委任管理者は対象店舗と`manage_bots`が明示的に付与された場合だけ操作できる。
   削除中のBotは新規投稿がDBで拒否され、店舗Bot一覧・予約通知・検索応答の候補からも除外。
 
 ---
@@ -672,24 +629,6 @@ Journal Reportの「資料」へ登録し、Botが結果を返す。
 `line_report_help_manual.ts`、人間向け自動生成版は
 `docs/LINE-REPORT-JOURNAL-AI-MANUAL.md`）を参照して回答する。
 
-店舗スタッフ向けの使い方ページは `public/mtalk-help.html`
-（本番 `https://marugo-s.github.io/line_report/mtalk-help.html`）。
-操作手順だけを書き、テーブル名・管理API・内部構造は載せていない。
-ログイン画面とアカウントメニューの「使い方」から開ける。
-
-### 天気
-
-「今日／明日の天気」などには、店舗座標の気象データ（Open-Meteo）で直接答える。
-生成AIは通さず、返信末尾に店舗のおおまかな地域名と情報元を付ける。
-
-### Web検索
-
-ルーム設定の「AIのWeb検索」がONのときだけ、明示的な調べ物や最新情報が必要な
-疑問に Perplexity を使う。既定はOFF。検索1回ごとに料金が発生し、
-`ai_usage_events` へ実費を記録して AI 使用料ページに出す。
-店舗の実数値は検索対象外で、「ジャーナルに聞く」へ案内する。
-Webを見て答えたときは出典URLを1行に保ち、本文中でも開けるようにする。
-
 ---
 
 ## 20. データモデル
@@ -710,10 +649,10 @@ Webを見て答えたときは出典URLを1行に保ち、本文中でも開け�
 | --- | --- |
 | `chat_allowed_emails` | 旧許可リスト。セルフ登録の制限には現在使わない |
 | `chat_users` | 表示名とアイコン。`id`は`auth.users(id)` |
-| `chat_user_access` | M-talkだけの利用状態、通常全体権限、本部付与の全体承認・電子ジャーナルAI権限 |
+| `chat_user_access` | M-talkだけの利用状態、1対1開始・ルーム作成・ユーザー一覧権限 |
 | `chat_groups` | トークルーム。`is_direct`が真なら1対1 |
 | `chat_group_members` | 参加関係とルーム別の閲覧・送信・招待・管理権限 |
-| `chat_messages` | 発言。`kind`は`text`/`card`/`image`/`file`/`sticker`。本文を直すと`edited_at`と`edit_history`（取り消し線用） |
+| `chat_messages` | 発言。`kind`は`text`/`card`/`image`/`file`/`sticker` |
 | `chat_read_states` | 既読位置。未読バッジと既読表示に使う |
 | `chat_message_reactions` | リアクション。`(message_id, user_id, emoji)` |
 | `chat_private_notes` | 個人メモ（送信されない、本人限定） |
@@ -726,7 +665,6 @@ Webを見て答えたときは出典URLを1行に保ち、本文中でも開け�
 | `chat_push_dispatches` | 同一メッセージの重複送信防止 |
 | `chat_push_internal_config` | cron／pg_netから`chat-push`/`chat-knowledge`を叩くための内部シークレット |
 | `chat_admin_audit_log` | M-talk管理画面から行った利用・権限変更の監査ログ |
-| `chat_admin_delegations` | M-talk委任管理者の対象店舗・ルーム、操作能力、有効期限、停止状態 |
 
 ### 発言の種別（`kind`と`payload`）
 
@@ -757,7 +695,7 @@ insertは必ず`text`/`image`/`file`/`sticker`になり、`card`を詐称でき�
 `chat-global`チャンネルで購読する。RLSがそのまま効くため、未参加グループの新着は
 配信自体されない。
 
-- `chat_messages` INSERT / UPDATE / DELETE
+- `chat_messages` INSERT / DELETE
 - `chat_groups` INSERT
 - `chat_group_members` INSERT / UPDATE（本人のルーム権限変更） / DELETE
 - `chat_user_access` UPDATE（本人の全体利用状態変更）
@@ -769,11 +707,11 @@ insertは必ず`text`/`image`/`file`/`sticker`になり、`card`を詐称でき�
 
 ## 22. 設計上の割り切り・既知の制限
 
-- **他人の発言は削除も編集もできない**。自分のテキストは「…」→「編集」で直せる。
-  画像・ファイル・カード・大きく送ったスタンプは編集できない。
-- 検索から途中へジャンプしているあいだに新着が来たら、間の発言を読み足して穴を埋める。
-  見ていた位置は維持し、下端へは自動では飛ばない。「最新へ」で最下部へ移動できる。
-- 一覧の未参加グループは招待リンクを貼って参加する。リンク無しの直接参加はしない。
+- **発言は編集できない**。自分の発言は「…」メニューから削除でき、Realtimeで他の
+  参加者の画面からも消える。他人の発言は削除できない。訂正手段は削除のみ。
+- 検索から途中へジャンプしている間は新着を継ぎ足さない（間の発言を読み込んでいない
+  ため並びに穴が空く）。「最新へ」ボタンで読み直す。
+- 一覧の「参加」ボタンは実際には参加処理をせず、招待リンクの利用を案内するのみ。
 - ルームの完全削除はクライアントの直接DELETEではなく`admin-api`経由（監査ログと
   権限再検証を一箇所に集約するため）。
 
